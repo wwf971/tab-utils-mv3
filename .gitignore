@@ -1,0 +1,34 @@
+# OS Files
+.DS_Store
+Thumbs.db
+
+/copy_to_dest.py
+
+# Editor directories and files
+.idea
+.vscode/*
+!.vscode/extensions.json
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Build files
+*.crx
+*.pem
+*.zip
+popup/build/
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Temporary files
+*.tmp
+*~
+
+

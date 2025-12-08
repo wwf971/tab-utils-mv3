@@ -1,0 +1,52 @@
+{
+    "manifest_version": 3,
+    "name": "Tab Utils",
+    "version": "1.0",
+    "description": "Integrates several useful tab management utilities that make browsing experience smoother.",
+    "permissions": [
+        "tabs",
+        "activeTab",
+        "storage",
+        "contextMenus"
+    ],
+    "action": {
+        "default_popup": "popup/build/index.html",
+        "default_icon": "./icon/icon.png",
+        "default_title": "Tab Utils"
+    },
+    "background": {
+        "service_worker": "background.js"
+    },
+    "icons": {
+        "16": "./icon/icon.png",
+        "48": "./icon/icon.png",
+        "128": "./icon/icon.png"
+    },
+    "commands": {
+        "move_tab_to_last": {
+            "suggested_key": {
+                "default": "Ctrl+P"
+            },
+            "description": "move current tab to end"
+        },
+        "move_tab_to_first": {
+            "suggested_key": {
+                "default": "Ctrl+Q"
+            },
+            "description": "move current tab to first"
+        },
+        "move_recent_tab_to_current": {
+            "suggested_key": {
+                "default": "Ctrl+0"
+            },
+            "description": "move previously focused tab to right of current tab"
+        },
+        "duplicate_tab": {
+            "suggested_key": {
+                "default": "Ctrl+D"
+            },
+            "description": "duplicate current tab"
+        }
+    }
+}
+
