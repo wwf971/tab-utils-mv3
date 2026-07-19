@@ -3,7 +3,9 @@
 
 // Debug flag
 let is_debug = false;
-let enable_move_new_tab_next_to_current = true;
+let isMoveNewTabNextToCurrentEnabled = true;
+let isCurrentWindowTabCountShown = true;
+let isTotalTabCountShown = true;
 
 // ============================================================================
 // INITIALIZATION & SETTINGS
@@ -11,9 +13,20 @@ let enable_move_new_tab_next_to_current = true;
 
 // Load settings from chrome.storage on startup
 async function loadSettings() {
-	const result = await chrome.storage.sync.get(['enable_move_new_tab_next_to_current']);
-	enable_move_new_tab_next_to_current = result.enable_move_new_tab_next_to_current ?? true;
-	console.log('Settings loaded:', { enable_move_new_tab_next_to_current });
+	const result = await chrome.storage.sync.get([
+		'enable_move_new_tab_next_to_current',
+		'enable_badge_show_current_window_tab_count',
+		'enable_badge_show_total_tab_count'
+	]);
+	isMoveNewTabNextToCurrentEnabled = result.enable_move_new_tab_next_to_current ?? true;
+	isCurrentWindowTabCountShown = result.enable_badge_show_current_window_tab_count ?? true;
+	isTotalTabCountShown = result.enable_badge_show_total_tab_count ?? true;
+	console.log('Settings loaded:', {
+		isMoveNewTabNextToCurrentEnabled,
+		isCurrentWindowTabCountShown,
+		isTotalTabCountShown
+	});
+	await updateBadge("settings");
 }
 
 // Initialize settings
@@ -22,26 +35,35 @@ loadSettings();
 // Listen for messages from popup or other parts of the extension
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 	if (message.action === 'updateSettings') {
-		// Update the setting value
+		const settingsNext = {};
 		if ('enable_move_new_tab_next_to_current' in message.settings) {
-			enable_move_new_tab_next_to_current = message.settings.enable_move_new_tab_next_to_current;
-			
-			// Save to storage
-			chrome.storage.sync.set({
-				enable_move_new_tab_next_to_current: enable_move_new_tab_next_to_current
-			}).then(() => {
-				console.log('Setting updated and saved:', { enable_move_new_tab_next_to_current });
-				sendResponse({ success: true });
-			}).catch((error) => {
-				console.error('Error saving setting:', error);
-				sendResponse({ success: false, error: error.message });
-			});
-			
-			return true; // Keep message channel open for async response
+			isMoveNewTabNextToCurrentEnabled = message.settings.enable_move_new_tab_next_to_current;
+			settingsNext.enable_move_new_tab_next_to_current = isMoveNewTabNextToCurrentEnabled;
 		}
-		sendResponse({ success: true });
+		if ('enable_badge_show_current_window_tab_count' in message.settings) {
+			isCurrentWindowTabCountShown = message.settings.enable_badge_show_current_window_tab_count;
+			settingsNext.enable_badge_show_current_window_tab_count = isCurrentWindowTabCountShown;
+		}
+		if ('enable_badge_show_total_tab_count' in message.settings) {
+			isTotalTabCountShown = message.settings.enable_badge_show_total_tab_count;
+			settingsNext.enable_badge_show_total_tab_count = isTotalTabCountShown;
+		}
+		chrome.storage.sync.set(settingsNext).then(async () => {
+			if (
+				'enable_badge_show_current_window_tab_count' in settingsNext ||
+				'enable_badge_show_total_tab_count' in settingsNext
+			) {
+				await updateBadge("settings");
+			}
+			console.log('Settings updated and saved:', settingsNext);
+			sendResponse({ success: true });
+		}).catch((error) => {
+			console.error('Error saving settings:', error);
+			sendResponse({ success: false, error: error.message });
+		});
+		return true;
 	}
-	return true; // Keep message channel open for async response
+	return false;
 });
 
 // Create context menu on install
@@ -295,19 +317,19 @@ async function getTabIndex(tabId) {
 	}
 }
 
-// Function to move new tab next to current tab
-async function moveNewTabNextToCurrent(tabNew) {
-	// Check if feature is enabled
-	if (!enable_move_new_tab_next_to_current) {
-		return;
-	}
-	
-	if (!tabNew || !tabNew.windowId){
+// Function to position a new tab according to the setting
+async function positionNewTab(tabNew) {
+	if (!tabNew || tabNew.id === undefined || tabNew.windowId === undefined){
 		console.log("new tab created but no windowId", tabNew);
 		return;
 	}
+	if (!isMoveNewTabNextToCurrentEnabled) {
+		await chrome.tabs.move(tabNew.id, { index: -1 });
+		return;
+	}
+	
 	if(is_debug){
-		console.log("moveNewTabNextToCurrent(): tabNew", tabNew);
+		console.log("positionNewTab(): tabNew", tabNew);
 	}
 	// Check if the new tab is active (extension-created tabs often become active immediately)
 	const isNewTabActive = tabNew.active;
@@ -521,8 +543,24 @@ chrome.commands.onCommand.addListener((command) => {
 // ============================================================================
 
 // Display text over extension icon
-let display_current_window_tab_num = true;
-let intervalId = null;
+let isCurrentWindowTabCountNext = true;
+let badgeIntervalId = null;
+
+function stopBadgeInterval() {
+	if (badgeIntervalId === null) return;
+	clearInterval(badgeIntervalId);
+	badgeIntervalId = null;
+}
+
+function updateBadgeInterval() {
+	if (!isCurrentWindowTabCountShown || !isTotalTabCountShown) {
+		stopBadgeInterval();
+		return;
+	}
+	if (badgeIntervalId === null) {
+		badgeIntervalId = setInterval(updateBadge, 1500);
+	}
+}
 
 async function updateBadge(event_name) {
 	// Check if chrome.action API is available
@@ -533,17 +571,14 @@ async function updateBadge(event_name) {
 
 	// If this is an event-triggered update, reset the timer
 	if (event_name) {
-		// Clear any existing interval
-		if (intervalId !== null) {
-			clearInterval(intervalId);
-			intervalId = null;
-		}
-		
-		// Start a new interval only if one isn't already running
-		if (intervalId === null) {
-			intervalId = setInterval(updateBadge, 1500);
-		}
-		display_current_window_tab_num = true;
+		stopBadgeInterval();
+		isCurrentWindowTabCountNext = true;
+	}
+
+	if (!isCurrentWindowTabCountShown && !isTotalTabCountShown) {
+		stopBadgeInterval();
+		await chrome.action.setBadgeText({ text: '' });
+		return;
 	}
 
 	try {
@@ -553,16 +588,21 @@ async function updateBadge(event_name) {
 		const currentWindow = await chrome.windows.getCurrent({ populate: true });
 		const tab_num_current = currentWindow.tabs.length;
 
-		// Alternate what to show on the badge
-		const text = display_current_window_tab_num ? `${tab_num_current}` : `${tab_num_total}`;
-		if (display_current_window_tab_num) {
+		const isCurrentWindowCountDisplayed = isCurrentWindowTabCountShown && (
+			!isTotalTabCountShown || isCurrentWindowTabCountNext
+		);
+		const text = isCurrentWindowCountDisplayed ? `${tab_num_current}` : `${tab_num_total}`;
+		if (isCurrentWindowCountDisplayed) {
 			await chrome.action.setBadgeBackgroundColor({ color: '#157017' }); // Green for current window
 		} else {
 			await chrome.action.setBadgeBackgroundColor({ color: '#C72A1C' }); // Red for total
 		}
 		await chrome.action.setBadgeText({ text });
 
-		display_current_window_tab_num = !display_current_window_tab_num;
+		if (isCurrentWindowTabCountShown && isTotalTabCountShown) {
+			isCurrentWindowTabCountNext = !isCurrentWindowTabCountNext;
+		}
+		updateBadgeInterval();
 	} catch (error) {
 		console.error("Error updating badge:", error);
 	}
@@ -571,18 +611,10 @@ async function updateBadge(event_name) {
 // Register event listeners for badge updates
 chrome.tabs.onCreated.addListener((tabNew) => {
 	updateBadge("create");
-	moveNewTabNextToCurrent(tabNew);
+	positionNewTab(tabNew);
 });
 chrome.tabs.onRemoved.addListener(() => updateBadge("remove"));
 chrome.windows.onFocusChanged.addListener(() => updateBadge("focus_change"));
-
-// Initial update
-updateBadge();
-
-// Start the initial interval only if one isn't already running
-if (intervalId === null) {
-	intervalId = setInterval(updateBadge, 1500);  // every 1.5 seconds
-}
 
 console.log("Tab Utils extension loaded successfully");
 

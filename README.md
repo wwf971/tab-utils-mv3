@@ -2,7 +2,7 @@
 
 A manifest v3 browser extension that integrates several useful tab management utilities that make browsing experience smoother.
 
-Every feature can be turned off either in popup panel or by not assigning a hotkey for it.
+Every feature can be turned off either in popup settings panel or by not assigning a hotkey for it.
 
 ## Features
 
@@ -28,10 +28,10 @@ pnpm build
 
 Built files will be placed in `./popup/build/`
 
-## Installation
+## Installation for Chrome
 1. git clone this repo.
 1. build the popup (see above)
-2. Go to `chrome://extensions/`
+2. Go to `chrome://extensions/` in chrome browser.
 3. Enable "Developer mode"
 4. Click "Load unpacked"
 5. Select the `tab-utils-mv3` folder

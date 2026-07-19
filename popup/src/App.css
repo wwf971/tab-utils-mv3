@@ -13,7 +13,7 @@
   background: #f9fafb;
 }
 
-.popup-header h1 {
+.popup-title {
   margin: 0;
   font-size: 18px;
   font-weight: 600;
@@ -27,109 +27,40 @@
   font-size: 14px;
 }
 
-.settings-list {
-  padding: 12px;
-  flex: 1;
-}
-
-.setting-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.popup-config-panel {
   padding: 8px;
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  transition: all 0.2s ease;
-}
-
-.setting-item:hover {
-  background: #f9fafb;
-  border-color: #d1d5db;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-}
-
-.setting-info {
   flex: 1;
-  margin-right: 12px;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
-.setting-title {
-  font-size: 14px;
-  font-weight: 500;
-  color: #111827;
-  margin-bottom: 4px;
+.badge-count-control {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 2px;
+  white-space: nowrap;
 }
 
-.setting-description {
+.badge-count-button {
+  min-height: 23px;
+  padding: 2px 6px;
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  color: #4b5563;
+  font: inherit;
   font-size: 12px;
-  color: #6b7280;
-  line-height: 1.4;
+  cursor: pointer;
 }
 
-/* Toggle Switch */
-.toggle-switch {
+.badge-count-button-selected {
   position: relative;
-  display: inline-block;
-  width: 44px;
-  height: 24px;
-  flex-shrink: 0;
-  cursor: pointer;
+  z-index: 1;
+  border-color: #93c5fd;
+  background: #dbeafe;
+  color: #1d4ed8;
 }
 
-.toggle-switch input {
-  opacity: 0;
-  width: 0;
-  height: 0;
+.badge-count-button:disabled {
+  cursor: default;
+  opacity: 0.56;
 }
-
-.toggle-slider {
-  position: absolute;
-  cursor: pointer;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: #cbd5e1;
-  transition: .3s;
-  border-radius: 24px;
-}
-
-.toggle-slider:before {
-  position: absolute;
-  content: "";
-  height: 18px;
-  width: 18px;
-  left: 3px;
-  bottom: 3px;
-  background-color: white;
-  transition: .3s;
-  border-radius: 50%;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-}
-
-input:checked + .toggle-slider {
-  background-color: #3b82f6;
-}
-
-input:checked + .toggle-slider:before {
-  transform: translateX(20px);
-}
-
-input:focus + .toggle-slider {
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
-}
-
-/* Footer */
-.popup-footer {
-  padding: 12px 20px;
-  border-top: 1px solid #e5e7eb;
-  background: #f9fafb;
-  text-align: center;
-}
-
-.version {
-  font-size: 11px;
-  color: #9ca3af;
-}
-

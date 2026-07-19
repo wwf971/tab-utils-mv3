@@ -16,6 +16,7 @@ Thumbs.db
 
 # Build files
 *.crx
+*.xpi
 *.pem
 *.zip
 popup/build/
