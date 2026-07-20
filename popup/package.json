@@ -9,8 +9,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@wwf971/react-comp-misc": "file:../../../react-comp-misc",
+    "@wwf971/react-comp-misc": "workspace:^",
     "@wwf971/tab-manage-frontend-common": "workspace:*",
+    "mobx": "^6.15.0",
+    "mobx-react-lite": "^4.1.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

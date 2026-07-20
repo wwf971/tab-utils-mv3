@@ -20,6 +20,7 @@ Thumbs.db
 *.pem
 *.zip
 popup/build/
+.extension-build/
 node_modules/
 
 # Logs

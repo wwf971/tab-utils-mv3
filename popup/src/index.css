@@ -2,11 +2,20 @@
   box-sizing: border-box;
 }
 
+:root {
+  --popup-width: 620px;
+  --popup-height: 580px;
+}
+
 html, body {
   margin: 0;
   padding: 0;
-  width: 360px;
-  height: auto;
+  width: var(--popup-width);
+  min-width: var(--popup-width);
+  max-width: var(--popup-width);
+  height: var(--popup-height);
+  min-height: var(--popup-height);
+  max-height: var(--popup-height);
   overflow: hidden;
 }
 
@@ -20,7 +29,7 @@ body {
 }
 
 #root {
-  width: 360px;
-  height: auto;
+  width: 100%;
+  height: 100%;
 }
 

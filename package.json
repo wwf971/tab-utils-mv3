@@ -4,11 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "pnpm --dir popup dev",
+    "test": "node --test test/*.test.mjs",
     "build": "pnpm build:popup && pnpm package:chrome && pnpm package:firefox",
     "build:popup": "pnpm --dir popup exec vite build",
     "build:chrome": "pnpm build:popup && pnpm package:chrome",
     "build:firefox": "pnpm build:popup && pnpm package:firefox",
-    "package:chrome": "rm -f tab-utils-chrome.zip && zip -r tab-utils-chrome.zip manifest.json background.js icon popup/build",
-    "package:firefox": "rm -f tab-utils.xpi && zip -r tab-utils.xpi manifest.json background.js icon popup/build"
+    "package:chrome": "node scripts/package-extension.mjs chrome",
+    "package:firefox": "node scripts/package-extension.mjs firefox"
   }
 }

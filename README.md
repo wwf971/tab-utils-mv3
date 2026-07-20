@@ -4,6 +4,8 @@ A manifest v3 browser extension that integrates several useful tab management ut
 
 Every feature can be turned off either in popup settings panel or by not assigning a hotkey for it.
 
+For the system design and documentation index, see [Tab Utils](./doc/tab-utils-mv3.md).
+
 ## Features
 
 - **open new tab next to current tab**.
@@ -16,22 +18,33 @@ Every feature can be turned off either in popup settings panel or by not assigni
 
 - **display tab count**: Shows alternating current window / total tab count as a number on the extension icon (when pinned)
 - **Settings Popup**: Click extension icon to configure features
+- **browser recovery**: Regularly saves windows and tabs. A selected snapshot can be restored directly, or later events can be replayed to calculate and restore the last known state. See [snapshot recovery](./doc/snapshot_recover.md).
+
+## Test
+
+Launch frontend test server by `pnpm run dev`, which serves a page presenting the ui design of popups/windows/tabs of this extension.
 
 ## Build
 
-### build the popup panel page using pnpm.
+### Build popup pages and generate file for browser to import
+
 ```bash
 cd popup
 pnpm install
-pnpm build
+pnpm build:chrome # build for chrome
+pnpm build:firefox # build for firefox.
+  # an .xpi file will be generated at root, if build succeeds.
 ```
 
-Built files will be placed in `./popup/build/`
 
-## Installation for Chrome
+## Build and for Chrome
 1. git clone this repo.
 1. build the popup (see above)
 2. Go to `chrome://extensions/` in chrome browser.
 3. Enable "Developer mode"
 4. Click "Load unpacked"
 5. Select the `tab-utils-mv3` folder
+
+## Installation for Firefox
+
+On firefox, go to `about:debugging#/runtime/this-firefox`, and load extension at that page, instead of going to `about:addons`.

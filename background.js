@@ -1,3 +1,16 @@
+if (typeof importScripts === 'function' && !globalThis.TabSnapshot) {
+	importScripts(
+		'background/snapshot-base.js',
+		'background/snapshot-config.js',
+		'background/snapshot-storage.js',
+		'background/snapshot-retention.js',
+		'background/event-log.js',
+		'background/snapshot-capture.js',
+		'background/recovery.js',
+		'background/snapshot-main.js'
+	);
+}
+
 // Tab Utils Extension - Background Service Worker
 // Provides smart tab positioning and keyboard shortcuts for tab management
 
@@ -611,7 +624,9 @@ async function updateBadge(event_name) {
 // Register event listeners for badge updates
 chrome.tabs.onCreated.addListener((tabNew) => {
 	updateBadge("create");
-	positionNewTab(tabNew);
+	if (!globalThis.TabSnapshot?.isTabPositioningSuppressed) {
+		positionNewTab(tabNew);
+	}
 });
 chrome.tabs.onRemoved.addListener(() => updateBadge("remove"));
 chrome.windows.onFocusChanged.addListener(() => updateBadge("focus_change"));

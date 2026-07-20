@@ -20,8 +20,8 @@ const surfaces: ExtensionDevSurface[] = [
   {
     id: 'popup',
     label: 'Popup',
-    description: 'Deployed extension popup at 360px width',
-    preset: 'popup-360',
+    description: 'Deployed extension popup at 620px width',
+    preset: 'popup-620',
     content: <App />
   }
 ]

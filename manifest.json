@@ -7,7 +7,9 @@
         "tabs",
         "activeTab",
         "storage",
-        "contextMenus"
+        "contextMenus",
+        "alarms",
+        "tabGroups"
     ],
     "action": {
         "default_popup": "popup/build/index.html",
@@ -16,6 +18,14 @@
     },
     "background": {
         "scripts": [
+            "background/snapshot-base.js",
+            "background/snapshot-config.js",
+            "background/snapshot-storage.js",
+            "background/snapshot-retention.js",
+            "background/event-log.js",
+            "background/snapshot-capture.js",
+            "background/recovery.js",
+            "background/snapshot-main.js",
             "background.js"
         ],
         "service_worker": "background.js"
