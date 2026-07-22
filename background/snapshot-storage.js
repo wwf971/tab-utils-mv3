@@ -7,7 +7,13 @@
     if (catalog?.schemaVersion !== 1 || !Array.isArray(catalog.snapshotItems)) {
       return api.getSnapshotCatalogEmpty()
     }
-    return catalog
+    return {
+      ...catalog,
+      snapshotItems: catalog.snapshotItems.map((item) => ({
+        ...item,
+        isPinned: item.isPinned === true
+      }))
+    }
   }
 
   api.setSnapshotCatalog = async (catalog) => {
@@ -95,6 +101,24 @@
     await api.setSnapshotCatalog(catalogNext)
     await api.refreshStorageUsage()
     api.notifyRecoveryChanged({ changeType: 'snapshot-delete' })
+    return catalogNext
+  }
+
+  api.setSnapshotsPinned = async (snapshotIds, isPinned) => {
+    const snapshotIdSet = new Set(snapshotIds ?? [])
+    if (snapshotIdSet.size === 0) return api.getSnapshotCatalog()
+
+    const catalog = await api.getSnapshotCatalog()
+    let isChanged = false
+    const snapshotItems = catalog.snapshotItems.map((item) => {
+      if (!snapshotIdSet.has(item.snapshotId) || item.isPinned === isPinned) return item
+      isChanged = true
+      return { ...item, isPinned: isPinned === true }
+    })
+    if (!isChanged) return catalog
+
+    const catalogNext = { ...catalog, snapshotItems }
+    await api.setSnapshotCatalog(catalogNext)
     return catalogNext
   }
 

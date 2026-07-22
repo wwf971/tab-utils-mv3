@@ -130,11 +130,11 @@
       snapshotGenerateAtText: snapshot.snapshotGenerateAtText,
       windowCountTotal: snapshot.metadata.windowCountTotal,
       tabCountTotal: snapshot.metadata.tabCountTotal,
-      snapshotSizeByte: snapshot.metadata.snapshotSizeByte
+      snapshotSizeByte: snapshot.metadata.snapshotSizeByte,
+      isPinned: false
     })
     await api.setSnapshotCatalog(catalog)
 
-    await api.cleanSnapshotsByRetention()
     await api.cleanEventChunks(snapshot.snapshotGenerateAtMs, config.eventOverlapMinute)
     const maintenance = await api.refreshStorageUsage()
     await api.updateMaintenance({

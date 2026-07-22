@@ -79,6 +79,85 @@ test('retention preserves one snapshot in each non-empty tier', async () => {
   )
 })
 
+test('retention never removes pinned snapshots', async () => {
+  const api = await loadSnapshotApi(['snapshot-base.js', 'snapshot-retention.js'])
+  const timeNowMs = 1_800_000_000_000
+  const config = api.cloneValue(api.snapshotConfigDefault)
+  const items = [
+    { snapshotId: 'newest', snapshotGenerateAtMs: timeNowMs, isPinned: false },
+    {
+      snapshotId: 'pinned-close',
+      snapshotGenerateAtMs: timeNowMs - 60000,
+      isPinned: true
+    },
+    {
+      snapshotId: 'unpinned-close',
+      snapshotGenerateAtMs: timeNowMs - 2 * 60000,
+      isPinned: false
+    }
+  ]
+
+  assert.deepEqual(
+    Array.from(api.getSnapshotIdsDeleteByRetention(items, config, timeNowMs)),
+    ['unpinned-close']
+  )
+})
+
+test('old snapshot catalog entries default to unpinned', async () => {
+  const chrome = {
+    storage: {
+      local: {
+        get: async () => ({
+          snapshotCatalogV1: {
+            schemaVersion: 1,
+            snapshotItems: [{ snapshotId: 'old-snapshot' }]
+          }
+        })
+      }
+    }
+  }
+  const api = await loadSnapshotApi(['snapshot-base.js', 'snapshot-storage.js'], { chrome })
+  const catalog = await api.getSnapshotCatalog()
+
+  assert.equal(catalog.snapshotItems[0].isPinned, false)
+})
+
+test('manual snapshot scheduling resets snapshot and cleaning alarms', async () => {
+  const alarmsCreated = []
+  const alarmsCleared = []
+  const chrome = {
+    alarms: {
+      get: async (name) => ({
+        name,
+        periodInMinutes: name === 'snapshot-create' ? 5 : 10
+      }),
+      clear: async (name) => {
+        alarmsCleared.push(name)
+      },
+      create: async (name, options) => {
+        alarmsCreated.push({ name, ...options })
+      }
+    },
+    storage: {
+      sync: {
+        get: async () => ({})
+      },
+      onChanged: {
+        addListener: () => undefined
+      }
+    }
+  }
+  const api = await loadSnapshotApi(['snapshot-base.js', 'snapshot-config.js'], { chrome })
+
+  await api.resetSnapshotAndCleanAlarms()
+
+  assert.deepEqual(alarmsCleared, ['snapshot-create', 'snapshot-clean'])
+  assert.deepEqual(alarmsCreated, [
+    { name: 'snapshot-create', delayInMinutes: 5, periodInMinutes: 5 },
+    { name: 'snapshot-clean', delayInMinutes: 10, periodInMinutes: 10 }
+  ])
+})
+
 test('event replay updates focus, URL, selection, and tab removal', async () => {
   const api = await loadSnapshotApi(['snapshot-base.js', 'recovery.js'])
   const state = api.cloneValue({
@@ -135,6 +214,53 @@ test('event replay updates focus, URL, selection, and tab removal', async () => 
   assert.equal(state.windows[0].tabs[0].url, 'https://example.com/new')
   assert.equal(state.windows[0].tabs[0].isSelected, true)
   assert.equal(state.windows[0].tabs[0].tabIndex, 0)
+})
+
+test('recovery replay can stop at one selected event', async () => {
+  const api = await loadSnapshotApi(['snapshot-base.js', 'recovery.js'])
+  api.getRecoverySource = async () => ({
+    snapshot: {
+      snapshotId: 'snapshot-selected-step',
+      eventSequenceCutoff: 10,
+      metadata: {
+        windowCountTotal: 1,
+        tabCountTotal: 2
+      },
+      windows: [{
+        windowSourceId: 1,
+        groups: [],
+        tabs: [
+          { tabSourceId: 20, tabIndex: 0, url: 'https://example.com/old' },
+          { tabSourceId: 21, tabIndex: 1, url: 'https://example.com/keep' }
+        ]
+      }]
+    },
+    events: [
+      {
+        eventSequence: 11,
+        eventType: 'tabUpdated',
+        tabSourceId: 20,
+        change: { url: 'https://example.com/selected' }
+      },
+      {
+        eventSequence: 12,
+        eventType: 'tabRemoved',
+        tabSourceId: 21
+      }
+    ],
+    messages: [],
+    eventSequenceLast: 12
+  })
+
+  const result = await api.replayRecovery('snapshot-selected-step', 11)
+
+  assert.equal(result.eventSequenceLast, 11)
+  assert.equal(result.events.length, 2)
+  assert.equal(result.stateRecovered.windows[0].tabs.length, 2)
+  assert.equal(
+    result.stateRecovered.windows[0].tabs[0].url,
+    'https://example.com/selected'
+  )
 })
 
 test('tab move events preserve reconstructed order and indexes', async () => {
@@ -405,7 +531,8 @@ test('tab creation and URL changes are persisted and announced', async () => {
   assert.equal(chunk.events[1].change.url, 'https://example.com/new')
   assert.equal(chunk.events[2].change.pinned, true)
   assert.equal(chunk.events[2].tabIndex, 2)
-  assert.equal(runtimeMessages.length, 3)
+  assert.equal(runtimeMessages.length, 1)
+  assert.equal(runtimeMessages[0].eventSequenceLast, 3)
 })
 
 test('restore suppresses tab positioning and enforces final tab order', async () => {
@@ -466,6 +593,102 @@ test('restore suppresses tab positioning and enforces final tab order', async ()
   assert.deepEqual(highlightedIndexes, [0, 2])
   assert.equal(api.isTabPositioningSuppressed, false)
   assert.equal(api.isEventBatchActive, false)
+})
+
+test('batch restore creates ordered tabs in one cross-browser window call', async () => {
+  let windowCreateData = null
+  const tabMoveCalls = []
+  let tabCreateCount = 0
+  const chrome = {
+    windows: {
+      create: async (createData) => {
+        windowCreateData = createData
+        return {
+          id: 50,
+          tabs: [
+            { id: 200, index: 0 },
+            { id: 201, index: 1 },
+            { id: 202, index: 2 }
+          ]
+        }
+      },
+      update: async () => undefined
+    },
+    tabs: {
+      query: async () => [],
+      update: async (tabId) => ({ id: tabId }),
+      create: async () => {
+        tabCreateCount += 1
+        return { id: 999 }
+      },
+      move: async (tabIds, moveProperties) => {
+        tabMoveCalls.push({ tabIds, moveProperties })
+      },
+      highlight: async () => undefined,
+      group: null
+    },
+    tabGroups: null
+  }
+  const api = await loadSnapshotApi(['snapshot-base.js', 'recovery.js'], { chrome })
+  api.getSnapshot = async () => ({
+    snapshotId: 'snapshot-batch',
+    windowFocusedSourceId: 1,
+    windows: [{
+      windowSourceId: 1,
+      windowState: 'normal',
+      isPrivate: false,
+      tabActiveSourceId: 11,
+      groups: [],
+      tabs: [
+        {
+          tabSourceId: 10,
+          tabIndex: 0,
+          url: 'https://a.example',
+          isPinned: true,
+          isSelected: false
+        },
+        {
+          tabSourceId: 11,
+          tabIndex: 1,
+          url: 'https://b.example',
+          isPinned: false,
+          isSelected: true
+        },
+        {
+          tabSourceId: 12,
+          tabIndex: 2,
+          url: 'https://c.example',
+          isPinned: false,
+          isSelected: false
+        }
+      ]
+    }]
+  })
+  api.flushEventBatch = async () => undefined
+  api.createSnapshotNow = async () => undefined
+
+  const result = await api.restoreSnapshot('snapshot-batch', true)
+
+  assert.deepEqual(Array.from(windowCreateData.url), [
+    'https://a.example',
+    'https://b.example',
+    'https://c.example'
+  ])
+  assert.equal(tabCreateCount, 0)
+  assert.deepEqual(tabMoveCalls.map((call) => ({
+    tabIds: Array.from(call.tabIds),
+    moveProperties: { ...call.moveProperties }
+  })), [
+    {
+      tabIds: [200],
+      moveProperties: { windowId: 50, index: 0 }
+    },
+    {
+      tabIds: [201, 202],
+      moveProperties: { windowId: 50, index: 1 }
+    }
+  ])
+  assert.equal(result.tabCountCreated, 3)
 })
 
 test('storage usage includes snapshot and event counts', async () => {

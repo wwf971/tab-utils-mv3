@@ -10,6 +10,9 @@
 
   const runCommand = async (message) => {
     if (message.action === 'snapshotGetState') {
+      return { success: true, state: await api.getSnapshotState() }
+    }
+    if (message.action === 'snapshotRefreshState') {
       return { success: true, state: await getStateRefreshed() }
     }
     if (message.action === 'snapshotGet') {
@@ -20,6 +23,14 @@
     }
     if (message.action === 'snapshotCreate') {
       await api.createSnapshot()
+      await api.resetSnapshotAndCleanAlarms()
+      return { success: true, state: await api.getSnapshotState() }
+    }
+    if (message.action === 'snapshotSetPinned') {
+      await api.enqueueStorageTask(() => api.setSnapshotsPinned(
+        message.snapshotIds,
+        message.isPinned === true
+      ))
       return { success: true, state: await api.getSnapshotState() }
     }
     if (message.action === 'snapshotDelete') {
@@ -27,7 +38,10 @@
       return { success: true, state: await api.getSnapshotState() }
     }
     if (message.action === 'snapshotRestore') {
-      const restoreResult = await api.restoreSnapshot(message.snapshotId)
+      const restoreResult = await api.restoreSnapshot(
+        message.snapshotId,
+        message.isBatchRestore === true
+      )
       return {
         success: true,
         restoreResult,
@@ -43,13 +57,17 @@
     if (message.action === 'snapshotReplayRecovery') {
       return {
         success: true,
-        recovery: await api.enqueueStorageTask(() => api.replayRecovery(message.snapshotId))
+        recovery: await api.enqueueStorageTask(() => api.replayRecovery(
+          message.snapshotId,
+          message.eventSequenceEnd ?? null
+        ))
       }
     }
     if (message.action === 'snapshotRestoreRecovery') {
       const restoreResult = await api.restoreRecoveredState(
         message.snapshotId,
-        message.eventSequenceLast
+        message.eventSequenceLast,
+        message.isBatchRestore === true
       )
       return {
         success: true,

@@ -44,11 +44,11 @@
     const eventFirst = chunkValue.events[0]
     const isAgeReached = event.eventAtMs - eventFirst.eventAtMs >= config.eventChunkAgeMinute * 60000
     const isCountReached = chunkValue.events.length >= config.eventChunkCountMax
-    const isSizeReached = api.encodeSizeByte({
+    if (isAgeReached || isCountReached) return true
+    return api.encodeSizeByte({
       ...chunkValue,
       events: [...chunkValue.events, event]
     }) > config.eventChunkSizeByteMax
-    return isAgeReached || isCountReached || isSizeReached
   }
 
   api.appendEvents = async (eventInputs) => {
@@ -124,6 +124,24 @@
     })
   }
 
+  const queueEventInputFlush = () => {
+    if (api.isEventInputFlushQueued) return
+    api.isEventInputFlushQueued = true
+    api.enqueueStorageTask(async () => {
+      try {
+        while (api.eventInputsPending.length > 0) {
+          const eventInputs = api.eventInputsPending.splice(0)
+          await api.appendEvents(eventInputs)
+        }
+      } finally {
+        api.isEventInputFlushQueued = false
+        if (api.eventInputsPending.length > 0) queueEventInputFlush()
+      }
+    }).catch((error) => {
+      api.recordSnapshotError(error).catch(() => undefined)
+    })
+  }
+
   api.recordBrowserEvent = (eventType, eventData = {}) => {
     const eventInput = {
       eventAtMs: Date.now(),
@@ -134,9 +152,8 @@
       api.eventBatch.push(eventInput)
       return
     }
-    api.enqueueStorageTask(() => api.appendEvents([eventInput])).catch((error) => {
-      api.recordSnapshotError(error).catch(() => undefined)
-    })
+    api.eventInputsPending.push(eventInput)
+    queueEventInputFlush()
   }
 
   const recordTabUrlChange = (tabId, windowId, url) => {

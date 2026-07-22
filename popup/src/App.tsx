@@ -102,10 +102,18 @@ const RecoveryPanel = observer(function RecoveryPanel({ store }: { store: PopupS
         <button
           type="button"
           className="recovery-button recovery-button-primary"
+          disabled={isBusy || !snapshot || store.recoveryEventSequenceSelected === null}
+          onClick={() => store.replayRecovery(store.recoveryEventSequenceSelected)}
+        >
+          Replay to selected step
+        </button>
+        <button
+          type="button"
+          className="recovery-button recovery-button-primary"
           disabled={isBusy || !snapshot}
           onClick={() => store.replayRecovery()}
         >
-          Replay events
+          Replay to last step
         </button>
       </div>
 
@@ -122,14 +130,30 @@ const RecoveryPanel = observer(function RecoveryPanel({ store }: { store: PopupS
           <div className="recovery-section-title">
             Events after snapshot
             <span className="recovery-count">{store.recoveryEvents.length}</span>
+            {store.recoveryEventSequenceSelected !== null ? (
+              <span className="recovery-count">
+                Selected {store.recoveryEventSequenceSelected}
+              </span>
+            ) : null}
           </div>
           <div className="recovery-event-list">
             {store.recoveryEvents.length > 0 ? store.recoveryEvents.map((eventItem) => (
-              <div className="recovery-event-row" key={eventItem.eventId ?? eventItem.eventSequence}>
+              <button
+                type="button"
+                className={`recovery-event-row ${
+                  store.recoveryEventSequenceSelected === eventItem.eventSequence
+                    ? 'recovery-event-row-selected'
+                    : ''
+                }`}
+                key={eventItem.eventId ?? eventItem.eventSequence}
+                aria-pressed={store.recoveryEventSequenceSelected === eventItem.eventSequence}
+                disabled={isBusy}
+                onClick={() => store.setRecoveryEventSequenceSelected(eventItem.eventSequence)}
+              >
                 <span className="recovery-event-sequence">{eventItem.eventSequence}</span>
                 <span className="recovery-event-type">{formatEventType(eventItem.eventType)}</span>
                 <span className="recovery-event-time">{eventItem.eventAtText ?? ''}</span>
-              </div>
+              </button>
             )) : (
               <div className="recovery-empty">No later events. Replay will keep the snapshot unchanged.</div>
             )}
@@ -159,7 +183,7 @@ const RecoveryPanel = observer(function RecoveryPanel({ store }: { store: PopupS
         {calculatedSnapshot ? (
           <SnapshotOverview snapshot={calculatedSnapshot} />
         ) : (
-          <div className="recovery-empty">Replay the recorded events to calculate the last known state.</div>
+          <div className="recovery-empty">Replay recorded events to calculate a state to restore.</div>
         )}
         <div className="recovery-confirm-row">
           <button
@@ -170,6 +194,16 @@ const RecoveryPanel = observer(function RecoveryPanel({ store }: { store: PopupS
           >
             Confirm and restore
           </button>
+          <label className="snapshot-restore-mode">
+            <input
+              type="checkbox"
+              className="snapshot-restore-mode-checkbox"
+              checked={store.isBatchRestore}
+              disabled={isBusy}
+              onChange={(event) => store.setBatchRestore(event.currentTarget.checked)}
+            />
+            <span>Batch tabs</span>
+          </label>
         </div>
       </div>
     </div>
@@ -472,7 +506,7 @@ const LocalStorageOverviewControl = observer(function LocalStorageOverviewContro
         type="button"
         className="local-storage-refresh-button"
         disabled={isDisabled === true || store.isSnapshotBusy}
-        onClick={() => store.refreshSnapshotState()}
+        onClick={() => store.refreshSnapshotState(true)}
       >
         Refresh usage
       </button>
@@ -521,6 +555,9 @@ const SnapshotWorkspaceControl = observer(function SnapshotWorkspaceControl({
                   )
                 }
                 if (eventType === 'snapshotCreateAttempt') store.createSnapshot()
+                if (eventType === 'snapshotPinToggleAttempt') {
+                  store.toggleSnapshotsPinned(store.snapshotIdsSelected)
+                }
                 if (eventType === 'snapshotDeleteAttempt') {
                   store.deleteSnapshots(store.snapshotIdsSelected)
                 }
@@ -556,7 +593,8 @@ const SnapshotWorkspaceControl = observer(function SnapshotWorkspaceControl({
                     windowSourceIdSelected:
                       store.windowSourceIdSelectedBySnapshotId.get(snapshotId) ?? null,
                     tabIdsSelected: store.getTabIdsSelected(snapshotId),
-                    buttonOffsetLeft: store.getButtonOffsetLeft(`snapshot-detail:${snapshotId}`)
+                    buttonOffsetLeft: store.getButtonOffsetLeft(`snapshot-detail:${snapshotId}`),
+                    isBatchRestore: store.isBatchRestore
                   }}
                   config={{
                     isBusy,
@@ -578,6 +616,9 @@ const SnapshotWorkspaceControl = observer(function SnapshotWorkspaceControl({
                     }
                     if (eventType === 'snapshotRestoreAttempt') {
                       store.restoreSnapshot(snapshotId)
+                    }
+                    if (eventType === 'snapshotRestoreModeChange') {
+                      store.setBatchRestore(Boolean(eventData.isBatchRestore))
                     }
                     if (eventType === 'snapshotDeleteAttempt') {
                       store.deleteSnapshots([snapshotId])

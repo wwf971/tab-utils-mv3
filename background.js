@@ -557,12 +557,14 @@ chrome.commands.onCommand.addListener((command) => {
 
 // Display text over extension icon
 let isCurrentWindowTabCountNext = true;
-let badgeIntervalId = null;
+let badgeTimeoutId = null;
+let isBadgeUpdateRunning = false;
+let isBadgeUpdatePending = false;
 
 function stopBadgeInterval() {
-	if (badgeIntervalId === null) return;
-	clearInterval(badgeIntervalId);
-	badgeIntervalId = null;
+	if (badgeTimeoutId === null) return;
+	clearTimeout(badgeTimeoutId);
+	badgeTimeoutId = null;
 }
 
 function updateBadgeInterval() {
@@ -570,8 +572,11 @@ function updateBadgeInterval() {
 		stopBadgeInterval();
 		return;
 	}
-	if (badgeIntervalId === null) {
-		badgeIntervalId = setInterval(updateBadge, 1500);
+	if (badgeTimeoutId === null) {
+		badgeTimeoutId = setTimeout(() => {
+			badgeTimeoutId = null;
+			updateBadge();
+		}, 1500);
 	}
 }
 
@@ -587,14 +592,18 @@ async function updateBadge(event_name) {
 		stopBadgeInterval();
 		isCurrentWindowTabCountNext = true;
 	}
-
-	if (!isCurrentWindowTabCountShown && !isTotalTabCountShown) {
-		stopBadgeInterval();
-		await chrome.action.setBadgeText({ text: '' });
+	if (isBadgeUpdateRunning) {
+		isBadgeUpdatePending = true;
 		return;
 	}
+	isBadgeUpdateRunning = true;
 
 	try {
+		if (!isCurrentWindowTabCountShown && !isTotalTabCountShown) {
+			stopBadgeInterval();
+			await chrome.action.setBadgeText({ text: '' });
+			return;
+		}
 		const allTabs = await chrome.tabs.query({});
 		const tab_num_total = allTabs.length;
 
@@ -618,6 +627,14 @@ async function updateBadge(event_name) {
 		updateBadgeInterval();
 	} catch (error) {
 		console.error("Error updating badge:", error);
+	} finally {
+		isBadgeUpdateRunning = false;
+		if (isBadgeUpdatePending) {
+			isBadgeUpdatePending = false;
+			updateBadge("pending");
+		} else {
+			updateBadgeInterval();
+		}
 	}
 }
 

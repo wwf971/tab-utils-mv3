@@ -106,7 +106,7 @@
     return configNext
   }
 
-  api.ensureSnapshotAlarm = async (configInput) => {
+  api.ensureSnapshotAlarm = async (configInput, isReset = false) => {
     if (!chrome.alarms) return
     const config = configInput ?? await api.getConfig()
     const alarmCurrent = await chrome.alarms.get(api.alarmName)
@@ -116,7 +116,7 @@
     }
 
     const isIntervalCurrent = alarmCurrent?.periodInMinutes === config.snapshotIntervalMinute
-    if (isIntervalCurrent) return
+    if (isIntervalCurrent && !isReset) return
     if (alarmCurrent) await chrome.alarms.clear(api.alarmName)
     await chrome.alarms.create(api.alarmName, {
       delayInMinutes: config.snapshotIntervalMinute,
@@ -124,7 +124,7 @@
     })
   }
 
-  api.ensureCleanAlarm = async (configInput) => {
+  api.ensureCleanAlarm = async (configInput, isReset = false) => {
     if (!chrome.alarms) return
     const config = configInput ?? await api.getConfig()
     const alarmCurrent = await chrome.alarms.get(api.alarmNameClean)
@@ -135,12 +135,20 @@
     }
 
     const isIntervalCurrent = alarmCurrent?.periodInMinutes === cleanIntervalMinute
-    if (isIntervalCurrent) return
+    if (isIntervalCurrent && !isReset) return
     if (alarmCurrent) await chrome.alarms.clear(api.alarmNameClean)
     await chrome.alarms.create(api.alarmNameClean, {
       delayInMinutes: cleanIntervalMinute,
       periodInMinutes: cleanIntervalMinute
     })
+  }
+
+  api.resetSnapshotAndCleanAlarms = async () => {
+    const config = await api.getConfig()
+    await Promise.all([
+      api.ensureSnapshotAlarm(config, true),
+      api.ensureCleanAlarm(config, true)
+    ])
   }
 
   chrome.storage.onChanged?.addListener((changes, areaName) => {

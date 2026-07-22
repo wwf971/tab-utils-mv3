@@ -36,6 +36,8 @@ The default snapshot interval is five minutes. It is configurable in the Snapsho
 
 An alarm can be delayed by the browser. The configured interval is a request, not a strict schedule.
 
+Snapshot retention has a separate cleaning alarm controlled by `cleanIntervalMinute`. Snapshot creation does not run retention directly. A successful manual snapshot recreates both alarms, so the next automatic snapshot and cleaning run are each one full configured interval away.
+
 Snapshot creation uses the serialized storage task queue:
 
 1. Close the active event chunk.
@@ -46,9 +48,8 @@ Snapshot creation uses the serialized storage task queue:
 6. Write the snapshot object.
 7. Read it back and validate its identity and schema version.
 8. Add it to the snapshot catalog.
-9. Apply snapshot retention.
-10. Delete old closed event chunks.
-11. Update storage usage and warning state.
+9. Delete old closed event chunks.
+10. Update storage usage and warning state.
 
 Browser events that arrive during capture wait behind the snapshot task. They receive a sequence greater than `eventSequenceCutoff`. The captured browser state may already contain such a change, but replay remains correct because event application is idempotent.
 
@@ -124,7 +125,7 @@ Example snapshot:
 }
 ```
 
-`windowSourceId`, `tabSourceId`, and `groupSourceId` are browser-provided runtime IDs. They are not stable across browser runs.
+`windowSourceId`, `tabSourceId`, and `groupSourceId` are browser-provided runtime IDs. They are not stable across browser runs. Recovery keeps snapshot and event identities inside one browser run; refer to [Window identity during replay](./snapshot_recover.md#window-identity-during-replay).
 
 The active tab is the focused tab only when its window is focused. Every window may have one active tab. `windowFocusedSourceId` and `tabFocusedSourceId` make the browser-wide focus explicit.
 
@@ -242,13 +243,14 @@ snapshotMaintenanceV1
       "snapshotGenerateAtText": "20260720_04000012+09",
       "windowCountTotal": 2,
       "tabCountTotal": 18,
-      "snapshotSizeByte": 6214
+      "snapshotSizeByte": 6214,
+      "isPinned": false
     }
   ]
 }
 ```
 
-The catalog supports list, retention, and exact-key reads without loading snapshot bodies.
+The catalog supports list, pinning, retention, and exact-key reads without loading snapshot bodies. `isPinned` belongs to the catalog entry because retention does not load snapshot bodies. Entries created by older extension versions without this field are treated as unpinned.
 
 The complete snapshot keeps its own `metadata` object, and the catalog stores an independent copy of all metadata needed by listing and cleaning. Retention reads only `snapshotCatalogV1`; it does not read full snapshot objects. A metadata copy is updated only when the corresponding complete snapshot has first been written and validated.
 
@@ -379,6 +381,7 @@ The retention algorithm:
 5. Keep an item when its distance from the last kept item is at least the tier minimum spacing.
 6. Remove the other items only after the complete keep set is known.
 7. Never remove the newest complete snapshot.
+8. Never remove a pinned snapshot.
 
 The first snapshot in adjacent tiers can be close to the last snapshot in the previous tier. Preserving the newest snapshot of each tier makes boundary behavior stable and understandable.
 
@@ -396,6 +399,7 @@ Feature settings are stored as one small `snapshotConfigV1` object in `storage.s
   "isSnapshotEnabled": true,
   "isEventLogEnabled": true,
   "snapshotIntervalMinute": 5,
+  "cleanIntervalMinute": 10,
   "isPrivateIncluded": false,
   "isTabGroupIncluded": true,
   "isTabSelectionIncluded": true,
@@ -417,15 +421,15 @@ Feature settings are stored as one small `snapshotConfigV1` object in `storage.s
 
 Validation requires positive alarm and spacing values, ascending age boundaries, and bounded chunk limits. Invalid saved values fall back individually to defaults and produce a settings warning.
 
-Changing the automatic interval recreates the alarm. Disabling snapshots removes the alarm but does not delete stored data. Disabling event logging closes the active chunk and stops new event writes.
+Changing either interval recreates its alarm. A successful manual snapshot resets both alarm schedules. Disabling snapshots removes the snapshot alarm but does not delete stored data. Disabling event logging closes the active chunk and stops new event writes.
 
 ## Storage capacity and manual cleanup
 
-The Common popup tab shows snapshot count and size, event count and size, and total extension-local storage size. The values are loaded from the background source of truth, update after background changes, and can be refreshed manually.
+The Common popup tab shows snapshot count and size, event count and size, and total extension-local storage size. Normal state reads use the last maintenance values so event-driven popup refreshes do not repeatedly scan extension storage. Snapshot, deletion, and cleaning actions update the values, and the explicit usage refresh measures them on demand.
 
 The configurable warning threshold applies to the total size of all snapshots. Total extension-local usage is also shown because the browser quota applies to snapshots, event logs, and other local records together. When snapshot usage reaches the threshold, the popup shows an inline warning. It must not use a browser alert or confirmation dialog.
 
-The popup uses a fixed larger size and top configuration tabs for Common and Snapshots. The Snapshots tab contains automatic-capture settings, a fixed-height `FolderView` snapshot list, a horizontally scrollable control button group, and the cleaning policy. Snapshot rows display the required formatted timestamp as their name, with separate window and tab count columns.
+The popup uses a fixed larger size and top configuration tabs for Common and Snapshots. The Snapshots tab contains automatic-capture settings, a fixed-height `FolderView` snapshot list, a horizontally scrollable control button group, and the cleaning policy. Snapshot rows display the required formatted timestamp as their name, a pinned-state column, and separate window and tab count columns.
 
 The snapshot workspace uses `TabsOnTop`. Its first tab is the snapshot list and cannot be closed. Opening detail creates or focuses one detail tab per snapshot. Each detail has a window sidebar and a fixed-height `FolderView` tab table. Deleting a snapshot from its detail closes that detail tab after storage deletion succeeds.
 
@@ -438,6 +442,7 @@ Retention durations are displayed as readable text such as `6 days 23 hours`. Ea
 Manual actions include:
 
 - create a snapshot now
+- pin or unpin selected snapshots
 - run retention now
 - delete selected snapshots
 - delete oldest snapshots until usage is below a user-entered target

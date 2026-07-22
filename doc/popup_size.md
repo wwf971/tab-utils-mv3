@@ -22,15 +22,17 @@ html and body define the window size
 }
 ```
 
-Apply the width and height, including matching minimum and maximum values, to both `html` and `body`. Make `#root` and `.popup-container` fill that size with `width: 100%` and `height: 100%`.
+Apply the same fixed width, minimum width, and maximum width to both `html` and `body`. A percentage document width lets intrinsic content influence the browser's preferred popup width, which can make the popup resize when switching views. Make `#root` and `.popup-container` fill the fixed document size with `width: 100%` and `height: 100%`.
 
 Chrome and Firefox use the same popup CSS. Browser-specific manifest or JavaScript resizing logic is not needed.
 
 ## Important constraints
 
 - Set popup dimensions on `html` and `body`, not only on a nested component.
+- Keep the document width fixed. Wider tables and button groups must scroll or shrink inside the document instead of changing its intrinsic width.
 - Do not use `100vh` or `100vw` to limit popup size. They refer to the popup's current viewport, which can be very small during initial rendering.
 - Do not let loading, empty, or error content determine the document height.
+- Keep the loading view in the same flex slot as the loaded panel so initialization does not change the shell layout.
 - Keep root and container dimensions consistent. A wider inner container can be clipped by a narrower body.
 - Use `box-sizing: border-box` so borders and padding stay inside the specified size.
 - Keep the popup within browser extension-popup limits. Oversized dimensions can be restricted by the browser.

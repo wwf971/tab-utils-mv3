@@ -353,9 +353,25 @@
     }
   }
 
-  api.replayRecovery = async (snapshotId = null) => {
+  api.replayRecovery = async (snapshotId = null, eventSequenceEnd = null) => {
     const source = await api.getRecoverySource(snapshotId)
-    const { snapshot, events } = source
+    const { snapshot } = source
+    if (
+      eventSequenceEnd !== null &&
+      (
+        !Number.isInteger(eventSequenceEnd) ||
+        eventSequenceEnd < snapshot.eventSequenceCutoff ||
+        (
+          eventSequenceEnd > snapshot.eventSequenceCutoff &&
+          !source.events.some((event) => event.eventSequence === eventSequenceEnd)
+        )
+      )
+    ) {
+      throw new Error('The selected recovery event is no longer available')
+    }
+    const events = eventSequenceEnd === null
+      ? source.events
+      : source.events.filter((event) => event.eventSequence <= eventSequenceEnd)
     const messages = [...source.messages]
     const stateRecovered = api.cloneValue(snapshot)
     const sequenceSeen = new Set()
@@ -403,10 +419,10 @@
     )
     return {
       snapshot,
-      events,
+      events: source.events,
       stateRecovered,
       messages,
-      eventSequenceLast: source.eventSequenceLast
+      eventSequenceLast: eventSequenceEnd ?? source.eventSequenceLast
     }
   }
 
@@ -414,54 +430,119 @@
     (await api.replayRecovery(snapshotId)).stateRecovered
   )
 
-  const restoreWindow = async (windowSnapshot) => {
-    const windowCreated = await chrome.windows.create(getWindowCreateData(windowSnapshot))
-    const tabCreatedDefault = windowCreated.tabs?.[0]
+  const restoreWindow = async (windowSnapshot, isBatchRestore) => {
     const tabIdBySourceId = new Map()
     const errors = []
+    let windowCreated
 
-    for (let index = 0; index < windowSnapshot.tabs.length; index += 1) {
-      const tabSnapshot = windowSnapshot.tabs[index]
-      try {
-        let tabCreated
-        if (index === 0 && tabCreatedDefault) {
-          tabCreated = await chrome.tabs.update(tabCreatedDefault.id, {
-            url: tabSnapshot.url || undefined,
-            pinned: tabSnapshot.isPinned === true
-          })
+    if (isBatchRestore && windowSnapshot.tabs.length > 0) {
+      windowCreated = await chrome.windows.create({
+        ...getWindowCreateData(windowSnapshot),
+        url: windowSnapshot.tabs.map((tab) => tab.url || 'about:blank')
+      })
+      const tabsCreated = (
+        windowCreated.tabs?.length === windowSnapshot.tabs.length
+          ? windowCreated.tabs
+          : await chrome.tabs.query({ windowId: windowCreated.id })
+      ).sort((tabA, tabB) => tabA.index - tabB.index)
+      windowSnapshot.tabs.forEach((tabSnapshot, index) => {
+        const tabCreated = tabsCreated[index]
+        if (Number.isInteger(tabCreated?.id)) {
+          tabIdBySourceId.set(tabSnapshot.tabSourceId, tabCreated.id)
         } else {
-          tabCreated = await chrome.tabs.create({
-            windowId: windowCreated.id,
-            index,
-            url: tabSnapshot.url || undefined,
-            active: false,
-            pinned: tabSnapshot.isPinned === true
+          errors.push({
+            tabSourceId: tabSnapshot.tabSourceId,
+            errorText: 'Batch restore did not return the created tab'
           })
         }
-        tabIdBySourceId.set(tabSnapshot.tabSourceId, tabCreated.id)
-      } catch (error) {
-        errors.push({
-          tabSourceId: tabSnapshot.tabSourceId,
-          errorText: api.toErrorText(error)
-        })
+      })
+      await Promise.all(windowSnapshot.tabs.map(async (tabSnapshot) => {
+        if (tabSnapshot.isPinned !== true) return
+        const tabId = tabIdBySourceId.get(tabSnapshot.tabSourceId)
+        if (!Number.isInteger(tabId)) return
+        try {
+          await chrome.tabs.update(tabId, { pinned: true })
+        } catch (error) {
+          errors.push({
+            tabSourceId: tabSnapshot.tabSourceId,
+            errorText: api.toErrorText(error)
+          })
+        }
+      }))
+    } else {
+      windowCreated = await chrome.windows.create(getWindowCreateData(windowSnapshot))
+      const tabCreatedDefault = windowCreated.tabs?.[0]
+
+      for (let index = 0; index < windowSnapshot.tabs.length; index += 1) {
+        const tabSnapshot = windowSnapshot.tabs[index]
+        try {
+          let tabCreated
+          if (index === 0 && tabCreatedDefault) {
+            tabCreated = await chrome.tabs.update(tabCreatedDefault.id, {
+              url: tabSnapshot.url || undefined,
+              pinned: tabSnapshot.isPinned === true
+            })
+          } else {
+            tabCreated = await chrome.tabs.create({
+              windowId: windowCreated.id,
+              index,
+              url: tabSnapshot.url || undefined,
+              active: false,
+              pinned: tabSnapshot.isPinned === true
+            })
+          }
+          tabIdBySourceId.set(tabSnapshot.tabSourceId, tabCreated.id)
+        } catch (error) {
+          errors.push({
+            tabSourceId: tabSnapshot.tabSourceId,
+            errorText: api.toErrorText(error)
+          })
+        }
       }
     }
 
     const tabIdsOrdered = windowSnapshot.tabs
       .map((tab) => tabIdBySourceId.get(tab.tabSourceId))
       .filter(Number.isInteger)
-    for (let index = 0; index < tabIdsOrdered.length; index += 1) {
+    let isBatchOrderApplied = false
+    if (isBatchRestore) {
+      const tabIdsPinned = windowSnapshot.tabs
+        .filter((tab) => tab.isPinned === true)
+        .map((tab) => tabIdBySourceId.get(tab.tabSourceId))
+        .filter(Number.isInteger)
+      const tabIdsUnpinned = windowSnapshot.tabs
+        .filter((tab) => tab.isPinned !== true)
+        .map((tab) => tabIdBySourceId.get(tab.tabSourceId))
+        .filter(Number.isInteger)
       try {
-        await chrome.tabs.move(tabIdsOrdered[index], {
-          windowId: windowCreated.id,
-          index
-        })
-      } catch (error) {
-        errors.push({
-          tabOrder: true,
-          tabId: tabIdsOrdered[index],
-          errorText: api.toErrorText(error)
-        })
+        if (tabIdsPinned.length > 0) {
+          await chrome.tabs.move(tabIdsPinned, { windowId: windowCreated.id, index: 0 })
+        }
+        if (tabIdsUnpinned.length > 0) {
+          await chrome.tabs.move(tabIdsUnpinned, {
+            windowId: windowCreated.id,
+            index: tabIdsPinned.length
+          })
+        }
+        isBatchOrderApplied = true
+      } catch {
+        isBatchOrderApplied = false
+      }
+    }
+    if (!isBatchOrderApplied) {
+      for (let index = 0; index < tabIdsOrdered.length; index += 1) {
+        try {
+          await chrome.tabs.move(tabIdsOrdered[index], {
+            windowId: windowCreated.id,
+            index
+          })
+        } catch (error) {
+          errors.push({
+            tabOrder: true,
+            tabId: tabIdsOrdered[index],
+            errorText: api.toErrorText(error)
+          })
+        }
       }
     }
 
@@ -530,7 +611,7 @@
     }
   }
 
-  const restoreState = async (snapshot) => {
+  const restoreState = async (snapshot, isBatchRestore = false) => {
     api.isTabPositioningSuppressed = true
     api.isEventBatchActive = true
     api.eventBatch = []
@@ -539,7 +620,7 @@
     try {
       for (const windowSnapshot of snapshot.windows) {
         try {
-          windowResultList.push(await restoreWindow(windowSnapshot))
+          windowResultList.push(await restoreWindow(windowSnapshot, isBatchRestore))
         } catch (error) {
           errors.push({
             windowSourceId: windowSnapshot.windowSourceId,
@@ -579,17 +660,21 @@
     }
   }
 
-  api.restoreSnapshot = (snapshotId) => api.enqueueStorageTask(async () => {
+  api.restoreSnapshot = (snapshotId, isBatchRestore = false) => api.enqueueStorageTask(async () => {
     const snapshot = await api.getSnapshot(snapshotId)
-    return restoreState(snapshot)
+    return restoreState(snapshot, isBatchRestore)
   })
 
-  api.restoreRecoveredState = (snapshotId, eventSequenceLast) => api.enqueueStorageTask(async () => {
-    const replayResult = await api.replayRecovery(snapshotId)
+  api.restoreRecoveredState = (
+    snapshotId,
+    eventSequenceLast,
+    isBatchRestore = false
+  ) => api.enqueueStorageTask(async () => {
+    const replayResult = await api.replayRecovery(snapshotId, eventSequenceLast)
     if (replayResult.eventSequenceLast !== eventSequenceLast) {
       throw new Error('Recovery events changed. Replay the events again before restoring')
     }
-    const restoreResult = await restoreState(replayResult.stateRecovered)
+    const restoreResult = await restoreState(replayResult.stateRecovered, isBatchRestore)
     return {
       ...restoreResult,
       replayMessages: replayResult.messages

@@ -28,6 +28,11 @@
       let itemKeptLast = itemsTier[0]
       snapshotIdsKeep.add(itemKeptLast.snapshotId)
       for (const item of itemsTier.slice(1)) {
+        if (item.isPinned === true) {
+          snapshotIdsKeep.add(item.snapshotId)
+          itemKeptLast = item
+          continue
+        }
         if (itemKeptLast.snapshotGenerateAtMs - item.snapshotGenerateAtMs >= spacingMs) {
           snapshotIdsKeep.add(item.snapshotId)
           itemKeptLast = item
