@@ -6,6 +6,7 @@ import {
   type ExtensionDevSurface
 } from '@wwf971/tab-manage-frontend-common'
 import App from '../App'
+import { TabItemExamples } from './TabItemExamples'
 import './dev.css'
 
 installExtensionBrowserMock({
@@ -23,6 +24,13 @@ const surfaces: ExtensionDevSurface[] = [
     description: 'Deployed extension popup at 620px width',
     preset: 'popup-620',
     content: <App />
+  },
+  {
+    id: 'tab-item',
+    label: 'Tab Item',
+    description: 'Configurable list, grid, responsive, status, highlight, and close modes',
+    preset: 'tab',
+    content: <TabItemExamples />
   }
 ]
 

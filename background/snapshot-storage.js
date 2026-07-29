@@ -122,16 +122,19 @@
     return catalogNext
   }
 
-  api.getBytesInUseSafe = async (keys) => {
+  // Firefox has no storage.local.getBytesInUse. Reading every stored body only
+  // to measure it caused large periodic memory spikes on big stores, so when
+  // exact measurement is unavailable the caller-provided estimate is used.
+  // Estimates come from sizes recorded in catalog metadata at write time.
+  api.getBytesInUseSafe = async (keys, byteCountEstimate = 0) => {
     if (typeof chrome.storage.local.getBytesInUse === 'function') {
       return {
         byteCount: await chrome.storage.local.getBytesInUse(keys),
         isEstimated: false
       }
     }
-    const result = await chrome.storage.local.get(keys)
     return {
-      byteCount: api.encodeSizeByte(result),
+      byteCount: byteCountEstimate,
       isEstimated: true
     }
   }
@@ -150,10 +153,20 @@
       api.eventCatalogStorageKey,
       ...eventCatalog.chunks.map((chunk) => chunk.storageKey)
     ]
+    const snapshotByteEstimate = api.encodeSizeByte(snapshotCatalog) +
+      snapshotCatalog.snapshotItems.reduce(
+        (byteCount, item) => byteCount + Number(item.snapshotSizeByte ?? 0),
+        0
+      )
+    const eventByteEstimate = api.encodeSizeByte(eventCatalog) +
+      eventCatalog.chunks.reduce(
+        (byteCount, chunk) => byteCount + Number(chunk.chunkSizeByte ?? 0),
+        0
+      )
     const [snapshotSize, eventSize, totalSize] = await Promise.all([
-      api.getBytesInUseSafe(snapshotKeys),
-      api.getBytesInUseSafe(eventKeys),
-      api.getBytesInUseSafe(null)
+      api.getBytesInUseSafe(snapshotKeys, snapshotByteEstimate),
+      api.getBytesInUseSafe(eventKeys, eventByteEstimate),
+      api.getBytesInUseSafe(null, snapshotByteEstimate + eventByteEstimate)
     ])
 
     return api.updateMaintenance({

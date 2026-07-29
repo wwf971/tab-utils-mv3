@@ -18,10 +18,19 @@ import {
   PopupStore,
   type SnapshotMaintenance
 } from './PopupStore'
+import { SearchPanel } from './SearchPanel'
 import './App.css'
 
 const badgeCurrentWindowValue = 'currentWindow'
 const badgeTotalValue = 'total'
+
+const SearchWorkspaceControl = observer(function SearchWorkspaceControl({
+  value
+}: ConfigCustomControlProps) {
+  const store = value as PopupStore | null
+  if (!store) return <div className="search-workspace-loading">Loading tab search...</div>
+  return <SearchPanel store={store} />
+})
 
 function BadgeTabCountControl({
   value,
@@ -135,8 +144,30 @@ const RecoveryPanel = observer(function RecoveryPanel({ store }: { store: PopupS
                 Selected {store.recoveryEventSequenceSelected}
               </span>
             ) : null}
+            <div className="recovery-event-column-control">
+              <span>Columns</span>
+              <NumValue
+                data={{ value: store.recoveryEventColCount }}
+                config={{
+                  min: 1,
+                  max: 8,
+                  step: 1,
+                  isDisabled: isBusy
+                }}
+                onEvent={(eventType, eventData) => {
+                  if (eventType === 'valueChangeAttempt') {
+                    void store.setRecoveryEventColCount(Number(eventData.value))
+                  }
+                }}
+              />
+            </div>
           </div>
-          <div className="recovery-event-list">
+          <div
+            className="recovery-event-list"
+            style={{
+              gridTemplateColumns: `repeat(${store.recoveryEventColCount}, minmax(0, 1fr))`
+            }}
+          >
             {store.recoveryEvents.length > 0 ? store.recoveryEvents.map((eventItem) => (
               <button
                 type="button"
@@ -147,6 +178,11 @@ const RecoveryPanel = observer(function RecoveryPanel({ store }: { store: PopupS
                 }`}
                 key={eventItem.eventId ?? eventItem.eventSequence}
                 aria-pressed={store.recoveryEventSequenceSelected === eventItem.eventSequence}
+                title={[
+                  eventItem.eventSequence,
+                  formatEventType(eventItem.eventType),
+                  eventItem.eventAtText ?? ''
+                ].filter((part) => String(part).length > 0).join(' · ')}
                 disabled={isBusy}
                 onClick={() => store.setRecoveryEventSequenceSelected(eventItem.eventSequence)}
               >
@@ -202,7 +238,7 @@ const RecoveryPanel = observer(function RecoveryPanel({ store }: { store: PopupS
               disabled={isBusy}
               onChange={(event) => store.setBatchRestore(event.currentTarget.checked)}
             />
-            <span>Batch tabs</span>
+            <span>Restore windows/tabs in a batch</span>
           </label>
         </div>
       </div>
@@ -454,6 +490,18 @@ function CleanIntervalControl(props: ConfigCustomControlProps) {
   )
 }
 
+function ContextTabCountControl(props: ConfigCustomControlProps) {
+  return (
+    <NumValueConfigControl
+      {...props}
+      unitText="tabs"
+      min={1}
+      max={100}
+      step={1}
+    />
+  )
+}
+
 function StorageUsageControl({ value }: ConfigCustomControlProps) {
   const maintenance = (value ?? {}) as SnapshotMaintenance
   return (
@@ -667,7 +715,9 @@ const PopupConfigContent = observer(function PopupConfigContent({
   store: PopupStore
 }) {
   const settings = {
+    searchWorkspace: store,
     enable_move_new_tab_next_to_current: store.isMoveNewTabNextToCurrentEnabled,
+    search_context_tab_count_side: store.tabContextCountSide,
     badge_tab_counts: store.badgeTabCounts,
     localStorageOverview: store,
     isSnapshotEnabled: store.snapshotConfig.isSnapshotEnabled,
@@ -688,6 +738,29 @@ const PopupConfigContent = observer(function PopupConfigContent({
     activeSubtabId: store.configSubtabId,
     items: [
       {
+        id: 'search_subtab',
+        name: 'Search',
+        type: 'subtab',
+        children: [
+          {
+            id: 'search_group',
+            label: 'Search open tabs',
+            type: 'group',
+            isFrameVisible: false,
+            children: [
+              {
+                id: 'searchWorkspace',
+                label: 'Search open tabs',
+                type: 'custom',
+                compName: 'searchWorkspace',
+                isFullWidth: true,
+                defaultValue: null
+              }
+            ]
+          }
+        ]
+      },
+      {
         id: 'common_subtab',
         name: 'Common',
         type: 'subtab',
@@ -703,6 +776,14 @@ const PopupConfigContent = observer(function PopupConfigContent({
                 description: 'New tabs open next to the current tab instead of at the end',
                 type: 'boolean',
                 defaultValue: true
+              },
+              {
+                id: 'search_context_tab_count_side',
+                label: 'Context tabs each side',
+                description: 'Tabs shown before and after the center tab in the search context view',
+                type: 'custom',
+                compName: 'contextTabCount',
+                defaultValue: 10
               }
             ]
           },
@@ -878,10 +959,12 @@ const PopupConfigContent = observer(function PopupConfigContent({
       }
     ],
     getComp: (compName: string) => {
+      if (compName === 'searchWorkspace') return SearchWorkspaceControl
       if (compName === 'badgeTabCount') return BadgeTabCountControl
       if (compName === 'localStorageOverview') return LocalStorageOverviewControl
       if (compName === 'snapshotInterval') return SnapshotIntervalControl
       if (compName === 'cleanInterval') return CleanIntervalControl
+      if (compName === 'contextTabCount') return ContextTabCountControl
       if (compName === 'urlEventInterval') return UrlEventIntervalControl
       if (compName === 'storageUsage') return StorageUsageControl
       if (compName === 'snapshotWorkspace') return SnapshotWorkspaceControl
@@ -909,7 +992,7 @@ const PopupConfigContent = observer(function PopupConfigContent({
       config={configStruct}
       onEvent={(eventType, eventData) => {
         if (eventType === 'activeSubtabChange') {
-          store.setConfigSubtabId(eventData.subtabId ?? 'common_subtab')
+          store.setConfigSubtabId(eventData.subtabId ?? 'search_subtab')
           return undefined
         }
         if (eventType !== 'valueChangeAttempt' && eventType !== 'valueDefaultSetAttempt') {
@@ -971,7 +1054,7 @@ const App = observer(function App() {
   return (
     <div className="popup-container">
       <div className="popup-header">
-        <div className="popup-title">Tab Utils Settings</div>
+        <div className="popup-title">Tab Utils</div>
       </div>
       {store.isLoading ? (
         <div className="loading">Loading...</div>

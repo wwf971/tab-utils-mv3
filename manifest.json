@@ -9,7 +9,8 @@
         "storage",
         "contextMenus",
         "alarms",
-        "tabGroups"
+        "tabGroups",
+        "unlimitedStorage"
     ],
     "action": {
         "default_popup": "popup/build/index.html",
@@ -22,6 +23,7 @@
             "background/snapshot-config.js",
             "background/snapshot-storage.js",
             "background/snapshot-retention.js",
+            "background/browser-state.js",
             "background/event-log.js",
             "background/snapshot-capture.js",
             "background/recovery.js",

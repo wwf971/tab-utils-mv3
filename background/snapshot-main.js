@@ -89,6 +89,54 @@
       await api.refreshStorageUsage()
       return { success: true, state: await api.getSnapshotState() }
     }
+    if (message.action === 'browserStateGet') {
+      const state = await api.getBrowserState()
+      return {
+        success: true,
+        stateId: state.stateId,
+        stateRevision: state.stateRevision,
+        result: state
+      }
+    }
+    if (message.action === 'browserStateRefresh') {
+      const state = await api.refreshBrowserState()
+      return {
+        success: true,
+        stateId: state.stateId,
+        stateRevision: state.stateRevision,
+        result: state
+      }
+    }
+    if (message.action === 'browserStateQueryTabs') {
+      const result = await api.queryBrowserTabs(message.query)
+      return {
+        success: true,
+        stateId: result.stateId,
+        stateRevision: result.stateRevision,
+        result
+      }
+    }
+    if (message.action === 'browserStateQueryTabContext') {
+      const result = await api.queryBrowserTabContext(message.query)
+      return {
+        success: true,
+        stateId: result.stateId,
+        stateRevision: result.stateRevision,
+        result
+      }
+    }
+    if (message.action === 'browserStateGetTabsSelected') {
+      return {
+        success: true,
+        result: await api.getBrowserTabsSelected(message.query)
+      }
+    }
+    if (message.action === 'browserTabAction') {
+      return {
+        success: true,
+        result: await api.runBrowserTabAction(message)
+      }
+    }
     return null
   }
 
@@ -111,8 +159,14 @@
   api.registerEventListeners()
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message?.action === 'snapshotRecoveryChanged') return false
-    if (!message?.action?.startsWith('snapshot')) return false
+    if (
+      message?.action === 'snapshotRecoveryChanged' ||
+      message?.action === 'browserStateChanged'
+    ) return false
+    if (
+      !message?.action?.startsWith('snapshot') &&
+      !message?.action?.startsWith('browser')
+    ) return false
     runCommand(message)
       .then((response) => sendResponse(response))
       .catch(async (error) => {
@@ -133,6 +187,15 @@
           await api.cleanSnapshotsByRetention()
           await api.refreshStorageUsage()
         }).catch(() => undefined)
+        return
+      }
+      if (alarm.name === api.browserStateAlarmName) {
+        api.getConfig().then((config) => {
+          if (!config.isSnapshotEnabled) {
+            return api.refreshBrowserState()
+          }
+          return undefined
+        }).catch(() => undefined)
       }
     })
   }
@@ -140,7 +203,9 @@
   Promise.all([
     api.ensureSnapshotAlarm(),
     api.ensureCleanAlarm(),
+    api.ensureBrowserStateAlarm(),
     api.ensureBrowserRunId(),
-    recordBrowserRunStart()
+    recordBrowserRunStart(),
+    api.refreshBrowserState()
   ]).catch(() => undefined)
 })()

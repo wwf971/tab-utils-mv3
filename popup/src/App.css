@@ -433,6 +433,30 @@
   font-weight: 400;
 }
 
+.recovery-event-column-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #64748b;
+  font-weight: 400;
+}
+
+.recovery-event-column-control .num-value-row {
+  gap: 2px;
+}
+
+.recovery-event-column-control .num-value-step-button {
+  width: 18px;
+  min-height: 18px;
+}
+
+.recovery-event-column-control .num-value-editable {
+  min-width: 24px;
+  min-height: 18px;
+  padding: 0 2px;
+  line-height: 16px;
+}
+
 .recovery-overview {
   min-width: 0;
 }
@@ -469,7 +493,9 @@
 }
 
 .recovery-event-list {
-  height: 77px;
+  display: grid;
+  align-content: start;
+  height: 100px;
   overflow: auto;
   border: 1px solid #e2e8f0;
   user-select: text;
@@ -477,11 +503,13 @@
 
 .recovery-event-row {
   display: grid;
-  grid-template-columns: 34px minmax(70px, 1fr) minmax(92px, auto);
+  grid-template-columns: 28px minmax(0, 1fr) minmax(0, 1.25fr);
   gap: 3px;
   width: 100%;
+  min-width: 0;
   padding: 2px 3px;
   border: 0;
+  border-right: 1px solid #eef2f6;
   border-bottom: 1px solid #eef2f6;
   background: #ffffff;
   color: #475569;
@@ -508,19 +536,22 @@
 }
 
 .recovery-event-sequence,
+.recovery-event-type,
 .recovery-event-time {
-  color: #64748b;
-  font-variant-numeric: tabular-nums;
-}
-
-.recovery-event-type {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.recovery-event-sequence,
+.recovery-event-time {
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+
 .recovery-message-list {
-  height: 72px;
+  height: 48px;
   overflow: auto;
   border: 1px solid #e2e8f0;
   background: #fbfcfd;

@@ -1,10 +1,8 @@
 (() => {
   const api = globalThis.TabSnapshot
   const tabUrlEventStateById = new Map()
-
-  const getTabState = (tab) => ({
+  const getBrowserTabData = api.getBrowserTabData ?? ((tab) => ({
     tabSourceId: tab?.id ?? null,
-    windowSourceId: tab?.windowId ?? null,
     tabIndex: tab?.index ?? null,
     title: tab?.title ?? '',
     url: tab?.url ?? tab?.pendingUrl ?? '',
@@ -14,6 +12,12 @@
     isMuted: tab?.mutedInfo?.muted === true,
     isDiscarded: tab?.discarded === true,
     groupSourceId: Number.isInteger(tab?.groupId) && tab.groupId >= 0 ? tab.groupId : null
+  }))
+  api.dispatchBrowserChange ??= () => undefined
+
+  const getTabState = (tab) => ({
+    ...getBrowserTabData(tab, api.configMemory ?? api.snapshotConfigDefault),
+    windowSourceId: tab?.windowId ?? null
   })
 
   const createChunk = (browserRunId, eventAtMs) => {
@@ -28,6 +32,7 @@
         eventAtFirstMs: null,
         eventAtLastMs: null,
         eventCount: 0,
+        chunkSizeByte: 0,
         isClosed: false
       },
       value: {
@@ -98,6 +103,7 @@
 
       if (isChunkRollRequired(chunkActive, event, config)) {
         descriptorActive.isClosed = true
+        descriptorActive.chunkSizeByte = api.encodeSizeByte(chunkActive)
         valuesSet[descriptorActive.storageKey] = chunkActive
         const created = createChunk(browserRunId, eventAtMs)
         descriptorActive = created.descriptor
@@ -114,6 +120,7 @@
       descriptorActive.eventCount = chunkActive.events.length
     }
 
+    descriptorActive.chunkSizeByte = api.encodeSizeByte(chunkActive)
     valuesSet[descriptorActive.storageKey] = chunkActive
     valuesSet[api.eventCatalogStorageKey] = catalog
     await chrome.storage.local.set(valuesSet)
@@ -234,9 +241,18 @@
     if (api.isEventListenerRegistered) return
     api.isEventListenerRegistered = true
     chrome.tabs.onCreated.addListener((tab) => {
-      api.recordBrowserEvent('tabCreated', { tab: getTabState(tab) })
+      const tabState = getTabState(tab)
+      api.dispatchBrowserChange('tabCreated', { tab: tabState })
+      api.recordBrowserEvent('tabCreated', { tab: tabState })
     })
     chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+      api.dispatchBrowserChange('tabUpdated', {
+        tabSourceId: tabId,
+        windowSourceId: tab.windowId,
+        tabIndex: tab.index,
+        tab: getTabState(tab),
+        change: changeInfo
+      })
       if (typeof changeInfo.url === 'string') {
         recordTabUrlChange(tabId, tab.windowId, changeInfo.url)
       }
@@ -255,35 +271,44 @@
       })
     })
     chrome.tabs.onMoved.addListener((tabId, moveInfo) => {
+      api.dispatchBrowserChange('tabMoved', { tabSourceId: tabId, ...moveInfo })
       api.recordBrowserEvent('tabMoved', { tabSourceId: tabId, ...moveInfo })
     })
     chrome.tabs.onActivated.addListener((activeInfo) => {
-      api.recordBrowserEvent('tabActivated', {
+      const eventData = {
         tabSourceId: activeInfo.tabId,
         windowSourceId: activeInfo.windowId,
         tabSourceIdPrevious: activeInfo.previousTabId ?? null
-      })
+      }
+      api.dispatchBrowserChange('tabActivated', eventData)
+      api.recordBrowserEvent('tabActivated', eventData)
     })
     chrome.tabs.onHighlighted.addListener((highlightInfo) => {
-      api.recordBrowserEvent('tabHighlighted', {
+      const eventData = {
         windowSourceId: highlightInfo.windowId,
         tabSourceIds: highlightInfo.tabIds
-      })
+      }
+      api.dispatchBrowserChange('tabHighlighted', eventData)
+      api.recordBrowserEvent('tabHighlighted', eventData)
     })
     chrome.tabs.onAttached.addListener((tabId, attachInfo) => {
+      api.dispatchBrowserChange('tabAttached', { tabSourceId: tabId, ...attachInfo })
       api.recordBrowserEvent('tabAttached', { tabSourceId: tabId, ...attachInfo })
     })
     chrome.tabs.onDetached.addListener((tabId, detachInfo) => {
+      api.dispatchBrowserChange('tabDetached', { tabSourceId: tabId, ...detachInfo })
       api.recordBrowserEvent('tabDetached', { tabSourceId: tabId, ...detachInfo })
     })
     chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
       const urlEventState = tabUrlEventStateById.get(tabId)
       if (urlEventState?.timeoutId) clearTimeout(urlEventState.timeoutId)
       tabUrlEventStateById.delete(tabId)
+      api.dispatchBrowserChange('tabRemoved', { tabSourceId: tabId, ...removeInfo })
       api.recordBrowserEvent('tabRemoved', { tabSourceId: tabId, ...removeInfo })
     })
     if (chrome.tabs.onReplaced) {
       chrome.tabs.onReplaced.addListener((tabSourceIdAdded, tabSourceIdRemoved) => {
+        api.dispatchBrowserChange('tabReplaced', { tabSourceIdAdded, tabSourceIdRemoved })
         api.recordBrowserEvent('tabReplaced', { tabSourceIdAdded, tabSourceIdRemoved })
       })
     }
@@ -294,43 +319,58 @@
     }
 
     chrome.windows.onCreated.addListener((windowCreated) => {
-      api.recordBrowserEvent('windowCreated', {
+      const eventData = {
         windowSourceId: windowCreated.id,
         windowType: windowCreated.type,
         windowState: windowCreated.state,
-        isPrivate: windowCreated.incognito === true
-      })
+        isFocused: windowCreated.focused === true,
+        isPrivate: windowCreated.incognito === true,
+        left: windowCreated.left,
+        top: windowCreated.top,
+        width: windowCreated.width,
+        height: windowCreated.height
+      }
+      api.dispatchBrowserChange('windowCreated', eventData)
+      api.recordBrowserEvent('windowCreated', eventData)
     })
     chrome.windows.onRemoved.addListener((windowSourceId) => {
+      api.dispatchBrowserChange('windowRemoved', { windowSourceId })
       api.recordBrowserEvent('windowRemoved', { windowSourceId })
     })
     chrome.windows.onFocusChanged.addListener((windowSourceId) => {
+      api.dispatchBrowserChange('windowFocusChanged', { windowSourceId })
       api.recordBrowserEvent('windowFocusChanged', { windowSourceId })
     })
     if (chrome.windows.onBoundsChanged) {
       chrome.windows.onBoundsChanged.addListener((windowChanged) => {
-        api.recordBrowserEvent('windowBoundsChanged', {
+        const eventData = {
           windowSourceId: windowChanged.id,
           left: windowChanged.left,
           top: windowChanged.top,
           width: windowChanged.width,
           height: windowChanged.height,
           windowState: windowChanged.state
-        })
+        }
+        api.dispatchBrowserChange('windowBoundsChanged', eventData)
+        api.recordBrowserEvent('windowBoundsChanged', eventData)
       })
     }
 
     if (chrome.tabGroups) {
       chrome.tabGroups.onCreated?.addListener((group) => {
+        api.dispatchBrowserChange('tabGroupCreated', { group })
         api.recordBrowserEvent('tabGroupCreated', { group })
       })
       chrome.tabGroups.onUpdated?.addListener((group) => {
+        api.dispatchBrowserChange('tabGroupUpdated', { group })
         api.recordBrowserEvent('tabGroupUpdated', { group })
       })
       chrome.tabGroups.onMoved?.addListener((group) => {
+        api.dispatchBrowserChange('tabGroupMoved', { group })
         api.recordBrowserEvent('tabGroupMoved', { group })
       })
       chrome.tabGroups.onRemoved?.addListener((group) => {
+        api.dispatchBrowserChange('tabGroupRemoved', { group })
         api.recordBrowserEvent('tabGroupRemoved', { group })
       })
     }

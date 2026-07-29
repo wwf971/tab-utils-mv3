@@ -17,6 +17,7 @@ For the system design and documentation index, see [Tab Utils](./doc/tab-utils-m
   - support using a custom key to duplicate current tab.
 
 - **display tab count**: Shows alternating current window / total tab count as a number on the extension icon (when pinned)
+- **live browser state**: Maintains one background model for tab search, selected-tab actions, and local or remote save features. See [live browser state](./doc/browser_state.md).
 - **Settings Popup**: Click extension icon to configure features
 - **browser recovery**: Regularly saves windows and tabs. A selected snapshot can be restored directly, or later events can be replayed to calculate and restore the last known state. See [snapshot recovery](./doc/snapshot_recover.md).
 

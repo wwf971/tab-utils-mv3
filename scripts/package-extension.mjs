@@ -16,7 +16,7 @@ const archivePath = path.join(
   projectDir,
   browserName === 'chrome' ? 'tab-utils-chrome.zip' : 'tab-utils.xpi'
 )
-const isStorageUnlimited = process.env.BUILD_IS_SNAPSHOT_STORAGE_UNLIMITED === 'true'
+const isStorageUnlimited = process.env.BUILD_IS_SNAPSHOT_STORAGE_UNLIMITED !== 'false'
 
 await rm(buildDir, { recursive: true, force: true })
 await mkdir(buildDir, { recursive: true })
@@ -30,6 +30,11 @@ if (browserName === 'firefox') {
 }
 if (isStorageUnlimited && !manifest.permissions.includes('unlimitedStorage')) {
   manifest.permissions.push('unlimitedStorage')
+}
+if (!isStorageUnlimited) {
+  manifest.permissions = manifest.permissions.filter(
+    (permission) => permission !== 'unlimitedStorage'
+  )
 }
 await writeFile(
   path.join(buildDir, 'manifest.json'),

@@ -1,0 +1,202 @@
+.tab-search-panel {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+}
+
+.tab-search-field {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 27px;
+  padding: 3px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 1px;
+  color: #1f2937;
+  background: #ffffff;
+  font: inherit;
+  font-size: 12px;
+  line-height: 19px;
+  outline: none;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.tab-search-field:focus {
+  border-color: #60a5fa;
+}
+
+.tab-search-field-empty:before {
+  content: attr(data-placeholder);
+  color: #9aa0a6;
+  pointer-events: none;
+}
+
+.tab-search-control-button,
+.tab-search-load-more {
+  min-height: 25px;
+  padding: 2px 7px;
+  border: 1px solid #cbd5e1;
+  border-radius: 1px;
+  color: #334155;
+  background: #ffffff;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab-search-control-button:disabled,
+.tab-search-load-more:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.tab-search-load-more {
+  align-self: flex-start;
+}
+
+/* Fixed width keeps the button from jittering between Context and Exit Context */
+.tab-search-control-button-context {
+  min-width: 88px;
+}
+
+.tab-search-control-viewport {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.tab-search-control-track {
+  display: flex;
+  width: max-content;
+  min-width: max-content;
+  align-items: stretch;
+  gap: 3px;
+}
+
+.tab-search-message {
+  min-height: 18px;
+  padding: 1px 2px;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+.tab-search-message-loading {
+  color: #1d4ed8;
+}
+
+.tab-search-message-success {
+  color: #166534;
+}
+
+.tab-search-message-error {
+  color: #a33a2b;
+}
+
+.tab-search-results {
+  width: 100%;
+  min-width: 0;
+}
+
+.tab-search-results .folder-view-container,
+.tab-search-results .folder-view-switcher,
+.tab-search-results .folder-view-switcher-scroll,
+.tab-search-results .folder-view-switcher-content,
+.tab-search-results .folder-body-wrapper,
+.tab-search-results .folder-body {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.tab-search-results .folder-header-root {
+  display: none;
+}
+
+.tab-search-results .folder-body-row {
+  margin: 0;
+  border: 0;
+}
+
+.tab-search-results .folder-body-cell {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.tab-search-results .folder-body-cell-content,
+.tab-search-results .folder-body-cell-content-custom {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.tab-search-results .tab-item {
+  border-radius: 0;
+  background: #ffffff;
+}
+
+.tab-search-results .folder-body-row + .folder-body-row .tab-item {
+  border-top: 0;
+}
+
+.tab-search-results .folder-body-row:not(.selected):hover .tab-item {
+  background: #f8fafc;
+}
+
+.tab-search-results .folder-body-row.selected .tab-item {
+  background: #e8f0fe;
+  box-shadow: inset 2px 0 0 #1a73e8;
+}
+
+/* Center tab of the context view */
+.tab-search-results .folder-body-row.tab-context-center .tab-item {
+  background: #e8f0fe;
+  box-shadow: inset 2px 0 0 #1a73e8;
+}
+
+/* Edge rows of the context view. All three states share one fixed height. */
+.tab-context-edge {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: 100%;
+  height: 26px;
+  border: 1px dashed #cbd5e1;
+  color: #64748b;
+  background: #fafbfc;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.tab-context-edge-more {
+  color: #1d4ed8;
+  cursor: pointer;
+}
+
+.tab-context-edge-more:hover {
+  background: #eff6ff;
+}
+
+.tab-context-edge-loading {
+  color: #94a3b8;
+  background: #f1f5f9;
+}
+
+.tab-context-edge-border {
+  cursor: default;
+}

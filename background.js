@@ -4,6 +4,7 @@ if (typeof importScripts === 'function' && !globalThis.TabSnapshot) {
 		'background/snapshot-config.js',
 		'background/snapshot-storage.js',
 		'background/snapshot-retention.js',
+		'background/browser-state.js',
 		'background/event-log.js',
 		'background/snapshot-capture.js',
 		'background/recovery.js',
@@ -61,6 +62,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 			isTotalTabCountShown = message.settings.enable_badge_show_total_tab_count;
 			settingsNext.enable_badge_show_total_tab_count = isTotalTabCountShown;
 		}
+		if ('search_context_tab_count_side' in message.settings) {
+			// Popup-only setting; the background just persists it.
+			settingsNext.search_context_tab_count_side = message.settings.search_context_tab_count_side;
+		}
+		if ('recovery_event_column_count' in message.settings) {
+			// Popup-only setting; the background just persists it.
+			settingsNext.recovery_event_column_count = message.settings.recovery_event_column_count;
+		}
 		chrome.storage.sync.set(settingsNext).then(async () => {
 			if (
 				'enable_badge_show_current_window_tab_count' in settingsNext ||
@@ -116,8 +125,8 @@ let cacheTabActivePrev = new Map(); // windowId -> { tabId, lastUpdated }
 // TAB FOCUS HISTORY TRACKING
 // ============================================================================
 
-// Listen for tab activation events to track tab focus history
-chrome.tabs.onActivated.addListener((activeInfo) => {
+// Track tab focus history from the shared browser event dispatcher
+function handleTabActivated(activeInfo) {
 	// Store the previous active tab info
 	tabLastActiveIdGlobal = tabActiveIdGlobal;
 	windowLastActiveId = windowCurrentIdGlobal;
@@ -131,7 +140,7 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
 	
 	// Update active tab cache
 	onTabOpenActivated(activeInfo.windowId, activeInfo.tabId);
-});
+}
 
 // Function to update recent tabs history
 function updateTabsRecent(windowId, tabId) {
@@ -186,45 +195,36 @@ function onTabOpenActivated(windowId, tabId) {
 	}
 }
 
-function initTabActive(){
+async function initTabActive(){
 	console.log("initTabActive(): Initializing active tab cache...");
-	
-	// Get all windows and their active tabs
-	chrome.windows.getAll({ populate: true }, (windows) => {
-		if (chrome.runtime.lastError) {
-			console.error("initTabActive(): Error getting windows:", chrome.runtime.lastError);
-			return;
-		}
-		
-		windows.forEach((window) => {
-			if (window.tabs && window.tabs.length > 0) {
-				// Find the active tab in this window
-				const activeTab = window.tabs.find(tab => tab.active);
-				if (activeTab) {
-					// Initialize current active tab cache
-					cacheTabActive.set(window.id, {
-						tabId: activeTab.id,
-						lastUpdated: Date.now()
-					});
 
-					// Initialize previous active tab cache (set to same for now, will be updated on first activation)
-					cacheTabActivePrev.set(window.id, {
-						tabId: activeTab.id,
-						lastUpdated: Date.now()
-					});
-					
-					if (is_debug) {
-						console.log(`initTabActive(): Window ${window.id} - active tab: ${activeTab.id}`);
-					}
-				}
+	try {
+		const state = await globalThis.TabSnapshot.getBrowserState();
+		state.windows.forEach((windowItem) => {
+			const tabActive = windowItem.tabs.find((tab) => tab.isActive);
+			if (!tabActive) {
+				return;
+			}
+			cacheTabActive.set(windowItem.windowSourceId, {
+				tabId: tabActive.tabSourceId,
+				lastUpdated: Date.now()
+			});
+			cacheTabActivePrev.set(windowItem.windowSourceId, {
+				tabId: tabActive.tabSourceId,
+				lastUpdated: Date.now()
+			});
+			if (is_debug) {
+				console.log(`initTabActive(): Window ${windowItem.windowSourceId} - active tab: ${tabActive.tabSourceId}`);
 			}
 		});
 		if (is_debug) {
-			console.log(`initTabActive(): Initialized cache for ${windows.length} windows`);
+			console.log(`initTabActive(): Initialized cache for ${state.windows.length} windows`);
 			console.log("initTabActive(): cacheTabActive size:", cacheTabActive.size);
 			console.log("initTabActive(): cacheTabActivePrev size:", cacheTabActivePrev.size);
 		}
-	});
+	} catch (error) {
+		console.error("initTabActive(): Error getting browser state:", error);
+	}
 }
 
 // Initialize on extension load
@@ -235,7 +235,7 @@ initTabActive();
 // ============================================================================
 
 // Handle tab removal
-chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+function handleTabRemoved(tabId, removeInfo) {
 	// Remove the tab from all window histories
 	for (const [windowId, tabHistory] of tabsRecent.entries()) {
 		const index = tabHistory.indexOf(tabId);
@@ -254,15 +254,15 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
 	
 	// Remove from cache
 	removeTabFromCache(tabId, removeInfo.windowId);
-});
+}
 
 // Handle tab moving between windows
-chrome.tabs.onAttached.addListener((tabId, attachInfo) => {
+function handleTabAttached(tabId, attachInfo) {
 	// Add to new window's history
 	updateTabsRecent(attachInfo.newWindowId, tabId);
-});
+}
 
-chrome.tabs.onDetached.addListener((tabId, detachInfo) => {
+function handleTabDetached(tabId, detachInfo) {
 	// Remove from old window's history
 	if (tabsRecent.has(detachInfo.oldWindowId)) {
 		const windowHistory = tabsRecent.get(detachInfo.oldWindowId);
@@ -274,10 +274,10 @@ chrome.tabs.onDetached.addListener((tabId, detachInfo) => {
 	
 	// Remove from cache
 	removeTabFromCache(tabId, detachInfo.oldWindowId);
-});
+}
 
 // Handle window closure
-chrome.windows.onRemoved.addListener((windowId) => {
+function handleWindowRemoved(windowId) {
 	// Clean up history for closed window
 	tabsRecent.delete(windowId);
 	
@@ -288,7 +288,7 @@ chrome.windows.onRemoved.addListener((windowId) => {
 	if (is_debug) {
 		console.log(`Window ${windowId} closed - cleaned up active tab cache`);
 	}
-});
+}
 
 // Function to remove tab from cache when tabs are removed
 function removeTabFromCache(tabId, windowId) {
@@ -638,15 +638,48 @@ async function updateBadge(event_name) {
 	}
 }
 
-// Register event listeners for badge updates
-chrome.tabs.onCreated.addListener((tabNew) => {
-	updateBadge("create");
-	if (!globalThis.TabSnapshot?.isTabPositioningSuppressed) {
-		positionNewTab(tabNew);
+// Consume browser events already captured by the shared background dispatcher
+globalThis.TabSnapshot?.subscribeBrowserChange((change) => {
+	if (change.eventType === 'tabActivated') {
+		handleTabActivated({
+			tabId: change.tabSourceId,
+			windowId: change.windowSourceId
+		});
+	}
+	if (change.eventType === 'tabCreated') {
+		const tab = change.tab;
+		updateBadge("create");
+		if (!globalThis.TabSnapshot?.isTabPositioningSuppressed && tab) {
+			positionNewTab({
+				id: tab.tabSourceId,
+				windowId: tab.windowSourceId,
+				index: tab.tabIndex,
+				active: tab.isActive,
+				title: tab.title
+			});
+		}
+	}
+	if (change.eventType === 'tabRemoved') {
+		handleTabRemoved(change.tabSourceId, { windowId: change.windowId });
+		updateBadge("remove");
+	}
+	if (change.eventType === 'tabAttached') {
+		handleTabAttached(change.tabSourceId, {
+			newWindowId: change.newWindowId
+		});
+	}
+	if (change.eventType === 'tabDetached') {
+		handleTabDetached(change.tabSourceId, {
+			oldWindowId: change.oldWindowId
+		});
+	}
+	if (change.eventType === 'windowRemoved') {
+		handleWindowRemoved(change.windowSourceId);
+	}
+	if (change.eventType === 'windowFocusChanged') {
+		updateBadge("focus_change");
 	}
 });
-chrome.tabs.onRemoved.addListener(() => updateBadge("remove"));
-chrome.windows.onFocusChanged.addListener(() => updateBadge("focus_change"));
 
 console.log("Tab Utils extension loaded successfully");
 

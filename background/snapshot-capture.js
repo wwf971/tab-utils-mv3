@@ -1,107 +1,26 @@
 (() => {
   const api = globalThis.TabSnapshot
 
-  const getGroupDataById = async (config) => {
-    const groupDataById = new Map()
-    if (!config.isTabGroupIncluded || !chrome.tabGroups?.query) return groupDataById
-    try {
-      const groups = await chrome.tabGroups.query({})
-      for (const group of groups) {
-        groupDataById.set(group.id, {
-          groupSourceId: group.id,
-          title: group.title ?? '',
-          color: group.color ?? null,
-          isCollapsed: group.collapsed === true
-        })
-      }
-    } catch {
-      return groupDataById
-    }
-    return groupDataById
-  }
-
-  const getTabData = (tab, config) => ({
-    tabSourceId: tab.id,
-    tabIndex: tab.index,
-    title: tab.title ?? '',
-    url: tab.url ?? tab.pendingUrl ?? '',
-    isActive: tab.active === true,
-    isSelected: config.isTabSelectionIncluded ? tab.highlighted === true : false,
-    isPinned: tab.pinned === true,
-    groupSourceId: (
-      config.isTabGroupIncluded && Number.isInteger(tab.groupId) && tab.groupId >= 0
-        ? tab.groupId
-        : null
-    )
-  })
-
   api.captureSnapshotData = async (config, eventSequenceCutoff) => {
-    const snapshotCaptureStartAtMs = Date.now()
-    const [windowsAll, groupDataById, browserRunId] = await Promise.all([
-      chrome.windows.getAll({ populate: true }),
-      getGroupDataById(config),
-      api.ensureBrowserRunId()
-    ])
-    const windowsIncluded = windowsAll.filter((windowItem) => (
-      windowItem.type === 'normal' && (config.isPrivateIncluded || !windowItem.incognito)
-    ))
-
-    let windowFocusedSourceId = null
-    let tabFocusedSourceId = null
-    let tabCountTotal = 0
-    const windows = windowsIncluded.map((windowItem, windowIndex) => {
-      const tabs = (windowItem.tabs ?? [])
-        .sort((tabA, tabB) => tabA.index - tabB.index)
-        .map((tab) => getTabData(tab, config))
-      tabCountTotal += tabs.length
-      const tabActive = tabs.find((tab) => tab.isActive)
-      if (windowItem.focused) {
-        windowFocusedSourceId = windowItem.id
-        tabFocusedSourceId = tabActive?.tabSourceId ?? null
-      }
-      const groupIds = new Set(tabs.map((tab) => tab.groupSourceId).filter((id) => id !== null))
-      const groups = [...groupIds]
-        .map((groupId) => groupDataById.get(groupId))
-        .filter(Boolean)
-      return {
-        windowSourceId: windowItem.id,
-        windowIndex,
-        windowType: windowItem.type,
-        windowState: windowItem.state,
-        isFocused: windowItem.focused === true,
-        isPrivate: windowItem.incognito === true,
-        left: windowItem.left ?? null,
-        top: windowItem.top ?? null,
-        width: windowItem.width ?? null,
-        height: windowItem.height ?? null,
-        tabActiveSourceId: tabActive?.tabSourceId ?? null,
-        tabs,
-        groups
-      }
-    })
-
+    const tree = await api.refreshBrowserState()
     const snapshotGenerateAtMs = Date.now()
     const snapshotId = api.createId(snapshotGenerateAtMs)
     const snapshot = {
       schemaVersion: 1,
       snapshotId,
-      browserRunId,
+      browserRunId: tree.browserRunId,
       snapshotGenerateAtMs,
       snapshotGenerateAtText: api.formatTime(snapshotGenerateAtMs),
-      snapshotCaptureStartAtMs,
+      snapshotCaptureStartAtMs: tree.stateObserveStartAtMs,
       snapshotCaptureEndAtMs: snapshotGenerateAtMs,
       eventSequenceCutoff,
-      windowFocusedSourceId,
-      tabFocusedSourceId,
+      windowFocusedSourceId: tree.windowFocusedSourceId,
+      tabFocusedSourceId: tree.tabFocusedSourceId,
       metadata: {
-        windowCountTotal: windows.length,
-        tabCountTotal,
+        ...tree.metadata,
         snapshotSizeByte: 0,
-        isPrivateIncluded: config.isPrivateIncluded,
-        isTabGroupIncluded: config.isTabGroupIncluded && groupDataById.size > 0,
-        isTabSelectionIncluded: config.isTabSelectionIncluded
       },
-      windows
+      windows: tree.windows
     }
     const snapshotSizeInput = api.cloneValue(snapshot)
     delete snapshotSizeInput.metadata.snapshotSizeByte

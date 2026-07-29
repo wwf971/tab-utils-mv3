@@ -61,6 +61,10 @@ Recovery modes, replay behavior, tab ordering, restoration batching, and browser
 
 ## Snapshot data
 
+The window, tab, group, focus, and selection fields use the common tree defined in [Browser state data](./browser_state_data.md). Live browser state and snapshots must use the same scanner, normalizer, and tree validator.
+
+A snapshot keeps that common tree at the top level for version-1 compatibility. It adds snapshot identity, capture times, `eventSequenceCutoff`, and snapshot-specific metadata. Existing records are not moved under a new nested property.
+
 The required time text format is `YYYYMMDD_HHmmssSS+HH`. It has ten-millisecond precision and a signed timezone offset in hours, for example `20260720_04000012+09`.
 
 Epoch millisecond values are also stored. They are the source of truth for ordering and retention. Formatted time text is for display and export.
@@ -125,13 +129,7 @@ Example snapshot:
 }
 ```
 
-`windowSourceId`, `tabSourceId`, and `groupSourceId` are browser-provided runtime IDs. They are not stable across browser runs. Recovery keeps snapshot and event identities inside one browser run; refer to [Window identity during replay](./snapshot_recover.md#window-identity-during-replay).
-
-The active tab is the focused tab only when its window is focused. Every window may have one active tab. `windowFocusedSourceId` and `tabFocusedSourceId` make the browser-wide focus explicit.
-
-Native multi-tab selection is stored as `isSelected`. It comes from `tab.highlighted`. The snapshot query already returns this field in both Chrome and Firefox, so polling is not needed.
-
-When group capture is enabled, each grouped tab stores `groupSourceId`, while the group object stores title, color, and collapsed state. Group capture is skipped with a recorded capability status when `chrome.tabGroups` is unavailable or permission is not present.
+Source-ID lifetime, focus, multi-tab selection, group references, optional fields, and compatibility rules are defined in [Browser state data](./browser_state_data.md). Recovery keeps snapshot and event identities inside one browser run; refer to [Window identity during replay](./snapshot_recover.md#window-identity-during-replay).
 
 Private windows are controlled by `isPrivateIncluded`. The default is false. Changing this setting affects future snapshots and events; it does not rewrite old records.
 
@@ -139,7 +137,7 @@ Private windows are controlled by `isPrivateIncluded`. The default is false. Cha
 
 `snapshotSizeByte` is the UTF-8 byte length of the serialized snapshot with `metadata.snapshotSizeByte` omitted. Omitting the field avoids a self-referential size calculation.
 
-Actual snapshot storage usage is measured with `storage.local.getBytesInUse(snapshotKeys)`. Event-log usage and total extension-local usage are measured separately. If that method is unavailable, the fallback is the UTF-8 encoded size of known catalog keys and values. The fallback is an estimate and is marked as such in maintenance state.
+Actual snapshot storage usage is measured with `storage.local.getBytesInUse(snapshotKeys)`. Event-log usage and total extension-local usage are measured separately. If that method is unavailable (Firefox does not implement it), the fallback sums sizes recorded in catalog metadata: `snapshotSizeByte` per snapshot item and `chunkSizeByte` per event chunk. The fallback must not read stored bodies only to measure them; on a large store that caused repeated memory spikes and could freeze the browser (refer to [Firefox freeze and crash notes](./issue_firefox_crash.md)). The fallback is an estimate and is marked as such in maintenance state.
 
 ## Event data
 
@@ -273,6 +271,7 @@ The complete snapshot keeps its own `metadata` object, and the catalog stores an
       "eventAtFirstMs": 1784487540100,
       "eventAtLastMs": 1784487661230,
       "eventCount": 13,
+      "chunkSizeByte": 4180,
       "isClosed": false
     }
   ]
@@ -474,6 +473,10 @@ The feature should be split into small background modules while keeping `backgro
 Suggested modules:
 
 ```text
+background/browser-state-base.js
+background/browser-state-scan.js
+background/browser-state-tracker.js
+background/browser-event.js
 background/snapshot-config.js
 background/snapshot-base.js
 background/snapshot-storage.js
@@ -485,15 +488,19 @@ background/recovery.js
 
 Responsibilities:
 
+- `browser-state-base.js` owns the common tree normalizer, validator, and field constants.
+- `browser-state-scan.js` reads windows, tabs, selection, focus, and optional groups once for live state or snapshot capture.
+- `browser-state-tracker.js` owns the current state, revisions, reducers, queries, reconciliation, and change notices.
+- `browser-event.js` registers each browser listener once and dispatches normalized changes to interested background consumers.
 - `snapshot-config.js` loads defaults, validates settings, and manages the alarm.
 - `snapshot-base.js` formats required time text, creates collision-safe IDs, and owns shared constants.
 - `snapshot-storage.js` owns catalogs, exact-key access, serialized writes, size checks, and repair.
-- `snapshot-capture.js` converts browser windows, tabs, selection, focus, and groups into a snapshot.
+- `snapshot-capture.js` adds a durable snapshot envelope to a common browser-state scan.
 - `snapshot-retention.js` computes a complete keep and delete set without storage side effects.
-- `event-log.js` registers event handlers, assigns sequence numbers, and rolls chunks.
+- `event-log.js` converts normalized browser changes into recovery events, assigns durable sequence numbers, and rolls chunks.
 - `recovery.js` applies ordered events to a snapshot-derived state model.
 
-The existing `background.js` listeners should call the event logger from the same handler that performs current extension behavior. This avoids duplicate listeners whose ordering is unclear.
+The shared browser-event handler dispatches to live state, the event logger, and existing extension behavior. This avoids duplicate listeners whose ordering is unclear. Live state receives complete changes; the event logger can omit or coalesce data that recovery does not need.
 
 `manifest.json` needs the `alarms` permission. It needs `tabGroups` when group details are enabled in a distributable build. Build generation conditionally adds `unlimitedStorage`.
 
