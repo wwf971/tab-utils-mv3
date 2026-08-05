@@ -2,8 +2,14 @@ import { makeAutoObservable, runInAction } from 'mobx'
 import type {
   SnapshotDetailData,
   SnapshotListItem,
-  SnapshotMessageState
+  SnapshotMessageState,
+  SnapshotViewSearchData
 } from '@wwf971/tab-manage-frontend-common'
+import {
+  TabSearchCore,
+  createLiveTabQuerySource,
+  createWindowsTabQuerySource
+} from './TabSearchCore'
 
 export interface RetentionTier {
   ageMaxMinute: number | null
@@ -62,43 +68,6 @@ interface RecoveryData {
   stateRecovered?: SnapshotDetailData
   messages: RecoveryMessage[]
   eventSequenceLast: number
-}
-
-export interface BrowserTabSearchItem {
-  tabSourceId: number
-  windowSourceId: number
-  windowIndex: number
-  tabIndex: number
-  title: string
-  url: string
-  favIconUrl?: string
-  isActive: boolean
-  isSelected: boolean
-  isPinned: boolean
-  isWindowFocused: boolean
-}
-
-interface BrowserTabSearchResult {
-  stateId: string
-  stateRevision: number
-  queryText: string
-  items: BrowserTabSearchItem[]
-  offset: number
-  limit: number
-  totalValue: number
-  isMore: boolean
-}
-
-interface BrowserTabContextResult {
-  stateId: string
-  stateRevision: number
-  isTabFound: boolean
-  tabCenterSourceId?: number
-  windowSourceId?: number
-  windowTabCount?: number
-  items?: BrowserTabSearchItem[]
-  isMoreBefore?: boolean
-  isMoreAfter?: boolean
 }
 
 export const tabContextCountSideDefault = 10
@@ -179,34 +148,17 @@ export class PopupStore {
   recoveryPhase: 'empty' | 'source' | 'replayed' | 'restored' = 'empty'
   isRecoveryUpdateListening = false
   recoveryRefreshTimeoutId: ReturnType<typeof setTimeout> | null = null
-  searchTextInput = ''
-  searchTextCommitted = ''
-  tabSearchItems: BrowserTabSearchItem[] = []
-  tabSearchSelectedIds: number[] = []
-  searchResultTotal = 0
-  isSearchMore = false
-  searchAction: string | null = null
-  searchMessageStatus: 'idle' | 'loading' | 'success' | 'error' = 'idle'
-  searchMessageText = ''
-  searchRefreshTimeoutId: ReturnType<typeof setTimeout> | null = null
-  searchCommitTimeoutId: ReturnType<typeof setTimeout> | null = null
-  searchToken = 0
-  isTabContextMode = false
-  tabContextCenterSourceId: number | null = null
-  tabContextItems: BrowserTabSearchItem[] = []
-  tabContextSelectedIds: number[] = []
   // Configured tab count on each side of the center tab. Loading more also
   // extends the loaded range by this count.
   tabContextCountSide = tabContextCountSideDefault
-  tabContextCountBefore = tabContextCountSideDefault
-  tabContextCountAfter = tabContextCountSideDefault
-  isTabContextMoreBefore = false
-  isTabContextMoreAfter = false
-  tabContextWindowSourceId: number | null = null
-  contextAction: 'enter' | 'loadBefore' | 'loadAfter' | null = null
-  contextRefreshTimeoutId: ReturnType<typeof setTimeout> | null = null
-  contextToken = 0
-  tabContextScrollRequestCount = 0
+  // Search over the live browser state, shown in the Search tab.
+  tabSearch = new TabSearchCore({
+    source: createLiveTabQuerySource(),
+    getContextCountSide: () => this.tabContextCountSide,
+    searchLimit: 100
+  })
+  // Search over one loaded snapshot, shown in that snapshot's detail tab.
+  snapshotSearchById = new Map<string, TabSearchCore>()
 
   constructor() {
     makeAutoObservable(this, {}, { autoBind: true })
@@ -214,32 +166,6 @@ export class PopupStore {
 
   get isSnapshotBusy() {
     return this.snapshotAction !== null
-  }
-
-  get isSearchBusy() {
-    return this.searchAction !== null
-  }
-
-  get isContextBusy() {
-    return this.contextAction !== null
-  }
-
-  // The visible view is either the search-result list or the context list.
-  get tabVisibleSelectedIds() {
-    return this.isTabContextMode ? this.tabContextSelectedIds : this.tabSearchSelectedIds
-  }
-
-  get tabVisibleSelectedFirst() {
-    const items = this.isTabContextMode ? this.tabContextItems : this.tabSearchItems
-    const tabSourceIdFirst = this.tabVisibleSelectedIds[0]
-    return items.find((tab) => tab.tabSourceId === tabSourceIdFirst) ?? null
-  }
-
-  get isTabVisibleSelectedCurrentActive() {
-    return (
-      this.tabVisibleSelectedFirst?.isActive === true &&
-      this.tabVisibleSelectedFirst?.isWindowFocused === true
-    )
   }
 
   async initialize() {
@@ -335,8 +261,8 @@ export class PopupStore {
       this.queueRecoveryRefresh()
     }
     if (message?.action === 'browserStateChanged') {
-      this.queueSearchRefresh()
-      this.queueContextRefresh()
+      this.tabSearch.queueSearchRefresh()
+      this.tabSearch.queueContextRefresh()
     }
     return false
   }
@@ -365,161 +291,30 @@ export class PopupStore {
       clearTimeout(this.recoveryRefreshTimeoutId)
       this.recoveryRefreshTimeoutId = null
     }
-    if (this.searchRefreshTimeoutId !== null) {
-      clearTimeout(this.searchRefreshTimeoutId)
-      this.searchRefreshTimeoutId = null
+    this.tabSearch.dispose()
+    for (const searchCore of this.snapshotSearchById.values()) {
+      searchCore.dispose()
     }
-    if (this.searchCommitTimeoutId !== null) {
-      clearTimeout(this.searchCommitTimeoutId)
-      this.searchCommitTimeoutId = null
-    }
-    if (this.contextRefreshTimeoutId !== null) {
-      clearTimeout(this.contextRefreshTimeoutId)
-      this.contextRefreshTimeoutId = null
-    }
-    this.searchToken += 1
-    this.contextToken += 1
-  }
-
-  setSearchTextInput(text: string) {
-    this.searchTextInput = text
-    if (this.isTabContextMode) this.exitTabContextMode()
-    this.queueSearchCommit()
-  }
-
-  queueSearchCommit() {
-    this.searchToken += 1
-    const searchToken = this.searchToken
-    if (this.searchCommitTimeoutId !== null) {
-      clearTimeout(this.searchCommitTimeoutId)
-    }
-    this.searchCommitTimeoutId = setTimeout(() => {
-      this.searchCommitTimeoutId = null
-      if (searchToken !== this.searchToken) return
-      void this.searchTabs(true)
-    }, 180)
-  }
-
-  setTabSearchSelectedIds(tabSourceIds: number[]) {
-    this.tabSearchSelectedIds = tabSourceIds.filter(Number.isInteger)
-  }
-
-  setTabContextSelectedIds(tabSourceIds: number[]) {
-    this.tabContextSelectedIds = tabSourceIds.filter(Number.isInteger)
-  }
-
-  setSearchMessage(
-    status: 'idle' | 'loading' | 'success' | 'error',
-    messageText: string
-  ) {
-    this.searchMessageStatus = status
-    this.searchMessageText = messageText
+    this.snapshotSearchById.clear()
   }
 
   setSearchButtonOffsetLeft(offsetLeft: number) {
     this.buttonOffsetLeftById.set('tab-search', offsetLeft)
   }
 
-  queueSearchRefresh() {
-    if (!this.searchTextCommitted || this.searchRefreshTimeoutId !== null) return
-    this.searchRefreshTimeoutId = setTimeout(() => {
-      this.searchRefreshTimeoutId = null
-      if (this.isSearchBusy) {
-        this.queueSearchRefresh()
-        return
-      }
-      this.searchTabs(true)
-    }, 150)
-  }
-
-  async searchTabs(isSilent = false, isAppend = false) {
-    const searchText = this.searchTextInput.trim()
-    this.searchToken += 1
-    const searchToken = this.searchToken
-    if (!searchText) {
-      this.tabSearchItems = []
-      this.tabSearchSelectedIds = []
-      this.searchResultTotal = 0
-      this.isSearchMore = false
-      this.searchTextCommitted = ''
-      this.setSearchMessage('idle', 'Enter text to search tab titles or URLs')
-      return false
-    }
-    if (this.isSearchBusy && this.searchAction !== 'search') return false
-    this.searchAction = 'search'
-    if (!isSilent) this.setSearchMessage('loading', 'Searching tabs...')
-    try {
-      const response = await chrome.runtime.sendMessage({
-        action: 'browserStateQueryTabs',
-        query: {
-          text: searchText,
-          offset: isAppend ? this.tabSearchItems.length : 0,
-          limit: 100
-        }
-      })
-      if (searchToken !== this.searchToken) return false
-      if (!response?.success) throw new Error(response?.error ?? 'Tab search failed')
-      runInAction(() => {
-        if (searchToken !== this.searchToken) return
-        const result = response.result as BrowserTabSearchResult
-        this.searchTextCommitted = result.queryText
-        this.tabSearchItems = isAppend
-          ? [...this.tabSearchItems, ...result.items]
-          : result.items
-        this.searchResultTotal = result.totalValue
-        this.isSearchMore = result.isMore
-        const tabSourceIdSet = new Set(this.tabSearchItems.map((tab) => tab.tabSourceId))
-        this.tabSearchSelectedIds = this.tabSearchSelectedIds.filter(
-          (tabSourceId) => tabSourceIdSet.has(tabSourceId)
-        )
-        // A silent background refresh must not replace a visible error message,
-        // for example the notice that the context tab was closed.
-        if (!isSilent || this.searchMessageStatus !== 'error') {
-          this.setSearchMessage(
-            'success',
-            result.totalValue === 1 ? '1 tab found' : `${result.totalValue} tabs found`
-          )
-        }
-      })
-      return true
-    } catch (error) {
-      runInAction(() => {
-        if (searchToken !== this.searchToken) return
-        if (!isAppend) {
-          this.tabSearchItems = []
-          this.tabSearchSelectedIds = []
-          this.searchResultTotal = 0
-          this.isSearchMore = false
-        }
-        this.setSearchMessage('error', getErrorText(error))
-      })
-      return false
-    } finally {
-      runInAction(() => {
-        if (searchToken === this.searchToken && this.searchAction === 'search') {
-          this.searchAction = null
-        }
-      })
-    }
-  }
-
-  async loadMoreSearchTabs() {
-    if (!this.isSearchMore) return false
-    return this.searchTabs(false, true)
-  }
-
   async runTabSearchAction(
     operation: 'activate' | 'close' | 'moveLeft' | 'moveRight' | 'duplicateLeft' | 'duplicateRight',
     tabSourceIdInput?: number
   ) {
+    const search = this.tabSearch
     // Close acts on every selected tab in one run. Other operations act on one tab.
     const tabSourceIds = tabSourceIdInput !== undefined
       ? [tabSourceIdInput]
-      : [...this.tabVisibleSelectedIds]
+      : [...search.visibleSelectedIds]
     const tabSourceId = tabSourceIds[0]
-    if (!Number.isInteger(tabSourceId) || this.isSearchBusy || this.isContextBusy) return false
-    this.searchAction = operation
-    this.setSearchMessage('loading', getTabActionLoadingText(operation, tabSourceIds.length))
+    if (!Number.isInteger(tabSourceId) || search.isBusy) return false
+    search.setSearchAction(operation)
+    search.setMessage('loading', getTabActionLoadingText(operation, tabSourceIds.length))
     try {
       const response = await chrome.runtime.sendMessage(
         operation === 'close'
@@ -528,196 +323,25 @@ export class PopupStore {
       )
       if (!response?.success) throw new Error(response?.error ?? 'Tab action failed')
       runInAction(() => {
-        this.setSearchMessage('success', getTabActionSuccessText(operation, tabSourceIds.length))
+        search.setMessage('success', getTabActionSuccessText(operation, tabSourceIds.length))
       })
       if (operation !== 'activate') {
         runInAction(() => {
-          this.searchAction = null
+          search.setSearchAction(null)
         })
-        if (this.isTabContextMode) await this.refreshTabContext()
-        await this.searchTabs(true)
+        if (search.isContextMode) await search.refreshContexts()
+        await search.search(true)
       }
       return true
     } catch (error) {
       runInAction(() => {
-        this.setSearchMessage('error', getErrorText(error))
+        search.setMessage('error', getErrorText(error))
       })
       return false
     } finally {
       runInAction(() => {
-        this.searchAction = null
+        search.setSearchAction(null)
       })
-    }
-  }
-
-  async fetchTabContext(countBefore: number, countAfter: number) {
-    const response = await chrome.runtime.sendMessage({
-      action: 'browserStateQueryTabContext',
-      query: {
-        tabSourceId: this.tabContextCenterSourceId,
-        countBefore,
-        countAfter
-      }
-    })
-    if (!response?.success) throw new Error(response?.error ?? 'Tab context loading failed')
-    return response.result as BrowserTabContextResult
-  }
-
-  applyTabContextResult(result: BrowserTabContextResult) {
-    this.tabContextItems = result.items ?? []
-    this.isTabContextMoreBefore = result.isMoreBefore === true
-    this.isTabContextMoreAfter = result.isMoreAfter === true
-    this.tabContextWindowSourceId = result.windowSourceId ?? null
-    const tabSourceIdSet = new Set(this.tabContextItems.map((tab) => tab.tabSourceId))
-    this.tabContextSelectedIds = this.tabContextSelectedIds.filter(
-      (tabSourceId) => tabSourceIdSet.has(tabSourceId)
-    )
-  }
-
-  async enterTabContextMode() {
-    const tabCenterSourceId = this.tabSearchSelectedIds[0] ?? null
-    if (tabCenterSourceId === null || this.isSearchBusy || this.isContextBusy) return false
-    this.contextToken += 1
-    const contextToken = this.contextToken
-    this.contextAction = 'enter'
-    this.tabContextCenterSourceId = tabCenterSourceId
-    this.setSearchMessage('loading', 'Loading nearby tabs...')
-    const countSide = this.tabContextCountSide
-    try {
-      const result = await this.fetchTabContext(countSide, countSide)
-      if (contextToken !== this.contextToken) return false
-      runInAction(() => {
-        if (!result.isTabFound) {
-          this.tabContextCenterSourceId = null
-          this.setSearchMessage('error', 'The selected tab no longer exists')
-          return
-        }
-        this.isTabContextMode = true
-        this.tabContextCountBefore = countSide
-        this.tabContextCountAfter = countSide
-        this.tabContextSelectedIds = [tabCenterSourceId]
-        this.applyTabContextResult(result)
-        this.tabContextScrollRequestCount += 1
-        this.setSearchMessage('success', 'Showing nearby tabs in the same window')
-      })
-      return this.isTabContextMode
-    } catch (error) {
-      runInAction(() => {
-        this.tabContextCenterSourceId = null
-        this.setSearchMessage('error', getErrorText(error))
-      })
-      return false
-    } finally {
-      runInAction(() => {
-        if (contextToken === this.contextToken) this.contextAction = null
-      })
-    }
-  }
-
-  exitTabContextMode(messageText = '') {
-    const searchResultIdSet = new Set(
-      this.tabSearchItems.map((tab) => tab.tabSourceId)
-    )
-    this.tabSearchSelectedIds = this.tabContextSelectedIds.filter(
-      (tabSourceId) => searchResultIdSet.has(tabSourceId)
-    )
-    this.contextToken += 1
-    this.isTabContextMode = false
-    this.tabContextCenterSourceId = null
-    this.tabContextItems = []
-    this.tabContextSelectedIds = []
-    this.tabContextCountBefore = this.tabContextCountSide
-    this.tabContextCountAfter = this.tabContextCountSide
-    this.isTabContextMoreBefore = false
-    this.isTabContextMoreAfter = false
-    this.tabContextWindowSourceId = null
-    this.contextAction = null
-    if (this.contextRefreshTimeoutId !== null) {
-      clearTimeout(this.contextRefreshTimeoutId)
-      this.contextRefreshTimeoutId = null
-    }
-    if (messageText) this.setSearchMessage('error', messageText)
-  }
-
-  async loadMoreTabContext(direction: 'before' | 'after') {
-    if (!this.isTabContextMode || this.isContextBusy || this.isSearchBusy) return false
-    const isBefore = direction === 'before'
-    if (isBefore ? !this.isTabContextMoreBefore : !this.isTabContextMoreAfter) return false
-    const countBeforeNext = this.tabContextCountBefore + (isBefore ? this.tabContextCountSide : 0)
-    const countAfterNext = this.tabContextCountAfter + (isBefore ? 0 : this.tabContextCountSide)
-    this.contextToken += 1
-    const contextToken = this.contextToken
-    this.contextAction = isBefore ? 'loadBefore' : 'loadAfter'
-    try {
-      const result = await this.fetchTabContext(countBeforeNext, countAfterNext)
-      if (contextToken !== this.contextToken) return false
-      runInAction(() => {
-        if (!result.isTabFound) {
-          this.exitTabContextMode('The context tab was closed. Context view exited')
-          return
-        }
-        this.tabContextCountBefore = countBeforeNext
-        this.tabContextCountAfter = countAfterNext
-        this.applyTabContextResult(result)
-      })
-      return true
-    } catch (error) {
-      runInAction(() => {
-        if (contextToken === this.contextToken) {
-          this.setSearchMessage('error', getErrorText(error))
-        }
-      })
-      return false
-    } finally {
-      runInAction(() => {
-        if (contextToken === this.contextToken) this.contextAction = null
-      })
-    }
-  }
-
-  queueContextRefresh() {
-    if (!this.isTabContextMode || this.contextRefreshTimeoutId !== null) return
-    this.contextRefreshTimeoutId = setTimeout(() => {
-      this.contextRefreshTimeoutId = null
-      if (!this.isTabContextMode) return
-      if (this.isContextBusy || this.isSearchBusy) {
-        this.queueContextRefresh()
-        return
-      }
-      void this.refreshTabContext()
-    }, 150)
-  }
-
-  // Silent re-fetch after a browser change notice. The loaded range is kept.
-  // The center tab being gone forces an exit; a moved center tab is recentered.
-  async refreshTabContext() {
-    if (!this.isTabContextMode || this.isContextBusy) return false
-    const contextToken = this.contextToken
-    const windowSourceIdBefore = this.tabContextWindowSourceId
-    try {
-      const result = await this.fetchTabContext(
-        this.tabContextCountBefore,
-        this.tabContextCountAfter
-      )
-      if (contextToken !== this.contextToken || !this.isTabContextMode) return false
-      runInAction(() => {
-        if (!result.isTabFound) {
-          this.exitTabContextMode('The context tab was closed. Context view exited')
-          return
-        }
-        this.applyTabContextResult(result)
-        if (result.windowSourceId !== windowSourceIdBefore) {
-          this.tabContextScrollRequestCount += 1
-        }
-      })
-      return true
-    } catch (error) {
-      runInAction(() => {
-        if (contextToken === this.contextToken) {
-          this.setSearchMessage('error', getErrorText(error))
-        }
-      })
-      return false
     }
   }
 
@@ -1121,8 +745,114 @@ export class PopupStore {
     }
     if (!this.snapshotDetailIds.includes(snapshotId)) this.snapshotDetailIds.push(snapshotId)
     this.snapshotTabActiveId = `snapshot:${snapshotId}`
+    this.ensureSnapshotSearch(snapshotId)
     if (this.snapshotById.has(snapshotId) || this.snapshotDetailIdLoading.has(snapshotId)) return
     await this.loadSnapshotDetail(snapshotId, 'Snapshot detail loaded')
+  }
+
+  ensureSnapshotSearch(snapshotId: string) {
+    let searchCore = this.snapshotSearchById.get(snapshotId)
+    if (!searchCore) {
+      searchCore = new TabSearchCore({
+        source: createWindowsTabQuerySource(
+          () => this.snapshotById.get(snapshotId)?.windows ?? []
+        ),
+        getContextCountSide: () => this.tabContextCountSide,
+        // A snapshot is searched locally and completely; no paging is needed.
+        searchLimit: 100000
+      })
+      this.snapshotSearchById.set(snapshotId, searchCore)
+    }
+    return searchCore
+  }
+
+  getSnapshotSearch(snapshotId: string) {
+    return this.snapshotSearchById.get(snapshotId) ?? null
+  }
+
+  // Data for the search bar, window match counts, and per-window context views
+  // rendered inside one snapshot detail.
+  getSnapshotSearchViewData(snapshotId: string): SnapshotViewSearchData | null {
+    const searchCore = this.getSnapshotSearch(snapshotId)
+    if (!searchCore) return null
+    const windowSourceIdSelected =
+      this.windowSourceIdSelectedBySnapshotId.get(snapshotId) ?? null
+    const isActive = searchCore.textCommitted.trim().length > 0
+    const context = windowSourceIdSelected !== null
+      ? searchCore.contextByWindowId.get(windowSourceIdSelected) ?? null
+      : null
+    const itemsMatched = searchCore.items.filter(
+      (item) => item.windowSourceId === windowSourceIdSelected
+    )
+    const tabIdSelectedSet = new Set(this.getTabIdsSelected(snapshotId))
+    const isContextEnterEnabled = (
+      isActive &&
+      context === null &&
+      itemsMatched.some((item) => tabIdSelectedSet.has(String(item.tabSourceId)))
+    )
+    const matchCountByWindowId: Record<string, number> = {}
+    for (const [windowSourceId, matchCount] of searchCore.matchCountByWindowId) {
+      matchCountByWindowId[String(windowSourceId)] = matchCount
+    }
+    return {
+      textInput: searchCore.textInput,
+      matchText: searchCore.textCommitted,
+      isActive,
+      isBusy: searchCore.isBusy,
+      messageStatus: searchCore.messageStatus,
+      messageText: searchCore.messageText,
+      matchCountByWindowId,
+      windowIdsInContext: [...searchCore.contextByWindowId.keys()],
+      itemsMatched,
+      context: context === null ? null : {
+        tabCenterSourceId: context.tabCenterSourceId,
+        items: context.items,
+        isMoreBefore: context.isMoreBefore,
+        isMoreAfter: context.isMoreAfter,
+        isLoadingBefore: context.action === 'loadBefore',
+        isLoadingAfter: context.action === 'loadAfter',
+        countLoad: this.tabContextCountSide,
+        scrollRequestCount: context.scrollRequestCount
+      },
+      isContextEnterEnabled
+    }
+  }
+
+  setSnapshotSearchTextInput(snapshotId: string, text: string) {
+    this.ensureSnapshotSearch(snapshotId).setTextInput(text)
+  }
+
+  // Enter the context view of the selected window, centered on the first
+  // selected tab among that window's matched tabs.
+  async enterSnapshotContext(snapshotId: string) {
+    const searchCore = this.getSnapshotSearch(snapshotId)
+    if (!searchCore) return false
+    const windowSourceIdSelected =
+      this.windowSourceIdSelectedBySnapshotId.get(snapshotId) ?? null
+    if (windowSourceIdSelected === null) return false
+    const tabIdSelectedSet = new Set(this.getTabIdsSelected(snapshotId))
+    const tabCenter = searchCore.items.find((item) => (
+      item.windowSourceId === windowSourceIdSelected &&
+      tabIdSelectedSet.has(String(item.tabSourceId))
+    ))
+    if (!tabCenter) return false
+    return searchCore.enterContext(tabCenter.tabSourceId)
+  }
+
+  exitSnapshotContext(snapshotId: string) {
+    const searchCore = this.getSnapshotSearch(snapshotId)
+    const windowSourceIdSelected =
+      this.windowSourceIdSelectedBySnapshotId.get(snapshotId) ?? null
+    if (!searchCore || windowSourceIdSelected === null) return
+    searchCore.exitContext(windowSourceIdSelected)
+  }
+
+  async loadMoreSnapshotContext(snapshotId: string, direction: 'before' | 'after') {
+    const searchCore = this.getSnapshotSearch(snapshotId)
+    const windowSourceIdSelected =
+      this.windowSourceIdSelectedBySnapshotId.get(snapshotId) ?? null
+    if (!searchCore || windowSourceIdSelected === null) return false
+    return searchCore.loadMoreContext(windowSourceIdSelected, direction)
   }
 
   async refreshSnapshotDetail(snapshotId: string) {
@@ -1145,6 +875,13 @@ export class PopupStore {
       runInAction(() => {
         const snapshot = response.snapshot as SnapshotDetailData
         this.snapshotById.set(snapshotId, snapshot)
+        // A reloaded snapshot body replaces the searched tree. The committed
+        // search and the loaded context ranges are recomputed on it.
+        const searchCore = this.ensureSnapshotSearch(snapshotId)
+        if (searchCore.textCommitted) {
+          void searchCore.search(true)
+          void searchCore.refreshContexts()
+        }
         const windowSourceIdSelected =
           this.windowSourceIdSelectedBySnapshotId.get(snapshotId)
         const isWindowStillPresent = snapshot.windows.some(
@@ -1197,6 +934,8 @@ export class PopupStore {
       this.windowSourceIdSelectedBySnapshotId.delete(id)
       this.tabIdsSelectedBySnapshotId.delete(id)
       this.snapshotDetailIdLoading.delete(id)
+      this.snapshotSearchById.get(id)?.dispose()
+      this.snapshotSearchById.delete(id)
     })
     if (activeSnapshotId && snapshotIdSet.has(activeSnapshotId)) {
       this.snapshotTabActiveId = 'snapshot-list'

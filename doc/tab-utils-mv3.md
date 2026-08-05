@@ -27,6 +27,8 @@ Frontend panels do not listen to browser tab and window events directly. The bac
 
 A background module and its listeners must be registered once. Chrome packages declare only `background.js` as a service worker, which imports the snapshot modules. Firefox packages declare only the ordered background script list. The build removes the other browser's background declaration. Duplicate background contexts would have independent storage queues and could overwrite events recorded during the same burst.
 
+The manifest `version` must be raised for every Firefox deployment. Firefox caches the parsed manifest keyed by extension ID and version, so installing a new package with an unchanged version keeps the old cached background script list; a script file newly added to that list is then never loaded, and every function it defines is missing at runtime.
+
 A background change notice is an invalidation signal, not the changed data itself. Each open panel debounces notices and re-fetches from the background. This keeps the background as the source of truth and combines event bursts into fewer reads.
 
 Manual refresh is always available. It performs the same full re-fetch and is useful after a frontend was opened late, suspended, or temporarily disconnected.
@@ -62,3 +64,7 @@ For snapshot formats and event storage, refer to [Browser snapshots and event st
 For recovery modes, replay rules, tab ordering, restoration batching, and Firefox details, refer to [Snapshot recovery](./snapshot_recover.md).
 
 For the Firefox freeze investigation and the designs that keep background load bounded, refer to [Firefox freeze and crash notes](./issue_firefox_crash.md).
+
+### Firefox and the tab-count badge
+
+If on Firefox the browser gets stuck after a while, consider turning off the tab number display feature. The possible cause: when both the current-window count and the total count are enabled, a background timer keeps running to switch the badge on the extension icon between the two numbers, and each switch re-queries windows and tabs. The timer runs only while both counts are enabled; displaying a single count updates the badge from browser events without any timer.

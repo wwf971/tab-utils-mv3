@@ -167,36 +167,5 @@
   box-shadow: inset 2px 0 0 #1a73e8;
 }
 
-/* Edge rows of the context view. All three states share one fixed height. */
-.tab-context-edge {
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  width: 100%;
-  height: 26px;
-  border: 1px dashed #cbd5e1;
-  color: #64748b;
-  background: #fafbfc;
-  font-size: 11px;
-  line-height: 16px;
-}
-
-.tab-context-edge-more {
-  color: #1d4ed8;
-  cursor: pointer;
-}
-
-.tab-context-edge-more:hover {
-  background: #eff6ff;
-}
-
-.tab-context-edge-loading {
-  color: #94a3b8;
-  background: #f1f5f9;
-}
-
-.tab-context-edge-border {
-  cursor: default;
-}
+/* Edge row styles are shared; refer to TabContextEdge in
+   @wwf971/tab-manage-frontend-common */

@@ -642,7 +642,8 @@ const SnapshotWorkspaceControl = observer(function SnapshotWorkspaceControl({
                       store.windowSourceIdSelectedBySnapshotId.get(snapshotId) ?? null,
                     tabIdsSelected: store.getTabIdsSelected(snapshotId),
                     buttonOffsetLeft: store.getButtonOffsetLeft(`snapshot-detail:${snapshotId}`),
-                    isBatchRestore: store.isBatchRestore
+                    isBatchRestore: store.isBatchRestore,
+                    search: store.getSnapshotSearchViewData(snapshotId) ?? undefined
                   }}
                   config={{
                     isBusy,
@@ -660,6 +661,24 @@ const SnapshotWorkspaceControl = observer(function SnapshotWorkspaceControl({
                       store.setTabIdsSelected(
                         snapshotId,
                         [...(eventData.tabIds as string[] ?? [])].map(String)
+                      )
+                    }
+                    if (eventType === 'searchTextInputChange') {
+                      store.setSnapshotSearchTextInput(
+                        snapshotId,
+                        String(eventData.text ?? '')
+                      )
+                    }
+                    if (eventType === 'contextEnterAttempt') {
+                      void store.enterSnapshotContext(snapshotId)
+                    }
+                    if (eventType === 'contextExitAttempt') {
+                      store.exitSnapshotContext(snapshotId)
+                    }
+                    if (eventType === 'contextLoadMoreAttempt') {
+                      return store.loadMoreSnapshotContext(
+                        snapshotId,
+                        eventData.direction as 'before' | 'after'
                       )
                     }
                     if (eventType === 'snapshotRestoreAttempt') {
@@ -686,6 +705,7 @@ const SnapshotWorkspaceControl = observer(function SnapshotWorkspaceControl({
                         eventData.colWidthById as Record<string, number>
                       )
                     }
+                    return undefined
                   }}
                 />
               ) : (

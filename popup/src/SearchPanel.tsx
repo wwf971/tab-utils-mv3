@@ -5,17 +5,15 @@ import {
 import { observer } from 'mobx-react-lite'
 import {
   FileIcon,
-  FolderView,
-  SpinningCircle
+  FolderView
 } from '@wwf971/react-comp-misc'
 import {
+  TabContextEdge,
   TabItem,
   type TabItemStatus
 } from '@wwf971/tab-manage-frontend-common'
-import {
-  PopupStore,
-  type BrowserTabSearchItem
-} from './PopupStore'
+import { PopupStore } from './PopupStore'
+import { type TabSearchItem } from './TabSearchCore'
 import './SearchPanel.css'
 
 const contextEdgeRowIdBefore = 'context-edge-before'
@@ -27,39 +25,42 @@ export const SearchPanel = observer(function SearchPanel({
   store: PopupStore
 }) {
   const resultsRef = useRef<HTMLDivElement>(null)
-  const isContextMode = store.isTabContextMode
+  const search = store.tabSearch
+  const contextSingle = search.contextSingle
+  const isContextMode = search.isContextMode
   const isActionBusy = (
-    (store.isSearchBusy && store.searchAction !== 'search') ||
-    store.isContextBusy
+    (search.isSearchBusy && search.searchAction !== 'search') ||
+    search.isContextBusy
   )
-  const tabSelectedCount = store.tabVisibleSelectedIds.length
+  const tabSelectedCount = search.visibleSelectedIds.length
   const isTabSelected = tabSelectedCount > 0
   const isRelativeActionDisabled = (
     isActionBusy ||
     !isTabSelected ||
-    store.isTabVisibleSelectedCurrentActive
+    search.isVisibleSelectedCurrentActive
   )
 
-  const scrollRequestCount = store.tabContextScrollRequestCount
+  const scrollRequestCount = contextSingle?.scrollRequestCount ?? 0
+  const tabCenterSourceId = contextSingle?.tabCenterSourceId ?? null
   useEffect(() => {
-    if (scrollRequestCount === 0) return
-    const tabCenterSourceId = store.tabContextCenterSourceId
-    if (tabCenterSourceId === null) return
+    if (scrollRequestCount === 0 || tabCenterSourceId === null) return
     requestAnimationFrame(() => {
       const rowEl = resultsRef.current?.querySelector(
         `[data-row-id="${tabCenterSourceId}"]`
       )
       rowEl?.scrollIntoView({ block: 'center' })
     })
-  }, [scrollRequestCount, store])
+  }, [scrollRequestCount, tabCenterSourceId])
 
   // Loading earlier tabs prepends rows. The scroll offset is compensated so the
   // tabs already on screen stay in place and no visual jump happens.
   const loadMoreTabContext = async (direction: 'before' | 'after') => {
+    const windowSourceId = contextSingle?.windowSourceId
+    if (windowSourceId === undefined) return
     const scrollEl = resultsRef.current?.querySelector('.folder-view-switcher-content')
     const scrollHeightBefore = scrollEl?.scrollHeight ?? 0
     const scrollTopBefore = scrollEl?.scrollTop ?? 0
-    const isLoaded = await store.loadMoreTabContext(direction)
+    const isLoaded = await search.loadMoreContext(windowSourceId, direction)
     if (isLoaded && direction === 'before' && scrollEl) {
       requestAnimationFrame(() => {
         scrollEl.scrollTop = scrollTopBefore + (scrollEl.scrollHeight - scrollHeightBefore)
@@ -67,28 +68,28 @@ export const SearchPanel = observer(function SearchPanel({
     }
   }
 
-  const rows = isContextMode
+  const rows = isContextMode && contextSingle
     ? [
       {
         id: contextEdgeRowIdBefore,
         data: {
           tab: {
             direction: 'before',
-            isMore: store.isTabContextMoreBefore,
-            isLoading: store.contextAction === 'loadBefore',
+            isMore: contextSingle.isMoreBefore,
+            isLoading: contextSingle.action === 'loadBefore',
             countLoad: store.tabContextCountSide
           }
         }
       },
-      ...store.tabContextItems.map((tab) => ({
+      ...contextSingle.items.map((tab) => ({
         id: String(tab.tabSourceId),
-        rowClassName: tab.tabSourceId === store.tabContextCenterSourceId
+        rowClassName: tab.tabSourceId === contextSingle.tabCenterSourceId
           ? 'tab-context-center'
           : '',
         data: {
           tab: {
             ...tab,
-            matchText: store.searchTextCommitted
+            matchText: search.textCommitted
           }
         }
       })),
@@ -97,36 +98,36 @@ export const SearchPanel = observer(function SearchPanel({
         data: {
           tab: {
             direction: 'after',
-            isMore: store.isTabContextMoreAfter,
-            isLoading: store.contextAction === 'loadAfter',
+            isMore: contextSingle.isMoreAfter,
+            isLoading: contextSingle.action === 'loadAfter',
             countLoad: store.tabContextCountSide
           }
         }
       }
     ]
-    : store.tabSearchItems.map((tab) => ({
+    : search.items.map((tab) => ({
       id: String(tab.tabSourceId),
       data: {
         tab: {
           ...tab,
-          matchText: store.searchTextCommitted
+          matchText: search.textCommitted
         }
       }
     }))
 
-  const rowIdsSelected = store.tabVisibleSelectedIds.map(String)
+  const rowIdsSelected = search.visibleSelectedIds.map(String)
 
   return (
     <div className="tab-search-panel">
       <div
-        className={`tab-search-field ${store.searchTextInput ? '' : 'tab-search-field-empty'}`}
+        className={`tab-search-field ${search.textInput ? '' : 'tab-search-field-empty'}`}
         contentEditable={!isActionBusy}
         suppressContentEditableWarning
         spellCheck={false}
         role="textbox"
         data-placeholder="Search title or URL"
         onInput={(event) => {
-          store.setSearchTextInput(event.currentTarget.textContent ?? '')
+          search.setTextInput(event.currentTarget.textContent ?? '')
         }}
       />
 
@@ -145,8 +146,8 @@ export const SearchPanel = observer(function SearchPanel({
             className: 'tab-search-control-button-context',
             isDisabled: isActionBusy || (!isContextMode && !isTabSelected),
             onClick: () => {
-              if (isContextMode) store.exitTabContextMode()
-              else void store.enterTabContextMode()
+              if (isContextMode) search.exitContextAll()
+              else void search.enterContext(search.selectedIds[0])
             }
           },
           {
@@ -176,8 +177,8 @@ export const SearchPanel = observer(function SearchPanel({
         ]}
       />
 
-      <div className={`tab-search-message tab-search-message-${store.searchMessageStatus}`}>
-        {store.searchMessageText || 'Enter text to search open tabs'}
+      <div className={`tab-search-message tab-search-message-${search.messageStatus}`}>
+        {search.messageText || 'Enter text to search open tabs'}
       </div>
 
       <div className="tab-search-results" ref={resultsRef}>
@@ -191,7 +192,7 @@ export const SearchPanel = observer(function SearchPanel({
             rowIdsSelected,
             viewCurrent: 'list',
             statusBar: {
-              itemCount: store.searchResultTotal,
+              itemCount: search.resultTotal,
               messageState: null
             }
           }}
@@ -209,7 +210,7 @@ export const SearchPanel = observer(function SearchPanel({
             compBodyByColId: (colId: string, rowId: string) => {
               if (colId !== 'tab') return undefined
               if (rowId === contextEdgeRowIdBefore || rowId === contextEdgeRowIdAfter) {
-                return ContextEdgeCell
+                return TabContextEdge
               }
               return SearchTabCell
             }
@@ -222,8 +223,11 @@ export const SearchPanel = observer(function SearchPanel({
               ))
               if (!isEdgeRowClicked) {
                 const tabSourceIds = rowIds.map(Number).filter(Number.isInteger)
-                if (isContextMode) store.setTabContextSelectedIds(tabSourceIds)
-                else store.setTabSearchSelectedIds(tabSourceIds)
+                if (isContextMode && contextSingle) {
+                  search.setContextSelectedIds(contextSingle.windowSourceId, tabSourceIds)
+                } else {
+                  search.setSelectedIds(tabSourceIds)
+                }
               }
             }
             if (eventType === 'rowClick') {
@@ -243,12 +247,12 @@ export const SearchPanel = observer(function SearchPanel({
           }}
         />
       </div>
-      {!isContextMode && store.isSearchMore ? (
+      {!isContextMode && search.isMore ? (
         <button
           type="button"
           className="tab-search-load-more"
           disabled={isActionBusy}
-          onClick={() => store.loadMoreSearchTabs()}
+          onClick={() => search.loadMore()}
         >
           Load More
         </button>
@@ -261,7 +265,7 @@ function SearchTabCell({
   data,
   onEvent
 }: {
-  data?: BrowserTabSearchItem & { matchText?: string }
+  data?: TabSearchItem & { matchText?: string }
   onEvent?: (eventType: string, eventData: Record<string, unknown>) => unknown
 }) {
   if (!data) return null
@@ -317,41 +321,6 @@ function SearchTabCell({
         }
       }}
     />
-  )
-}
-
-function ContextEdgeCell({
-  data
-}: {
-  data?: {
-    direction: 'before' | 'after'
-    isMore: boolean
-    isLoading: boolean
-    countLoad: number
-  }
-}) {
-  if (!data) return null
-  if (data.isLoading) {
-    return (
-      <div className="tab-context-edge tab-context-edge-loading">
-        <span>Loading nearby tabs...</span>
-        <SpinningCircle width={12} height={12} />
-      </div>
-    )
-  }
-  if (data.isMore) {
-    return (
-      <div className="tab-context-edge tab-context-edge-more">
-        {data.direction === 'before'
-          ? `Load ${data.countLoad} earlier tabs`
-          : `Load ${data.countLoad} later tabs`}
-      </div>
-    )
-  }
-  return (
-    <div className="tab-context-edge tab-context-edge-border">
-      Reaching window border, no more tabs
-    </div>
   )
 }
 
