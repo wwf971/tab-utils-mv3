@@ -1,11 +1,13 @@
 import {
   useEffect,
-  useRef
+  useRef,
+  useState
 } from 'react'
 import { observer } from 'mobx-react-lite'
 import {
   FileIcon,
-  FolderView
+  FolderView,
+  MenuComp
 } from '@wwf971/react-comp-misc'
 import {
   TabContextEdge,
@@ -14,10 +16,21 @@ import {
 } from '@wwf971/tab-manage-frontend-common'
 import { PopupStore } from './PopupStore'
 import { type TabSearchItem } from './TabSearchCore'
+import { TabBringPanel } from './TabBringPanel'
 import './SearchPanel.css'
 
 const contextEdgeRowIdBefore = 'context-edge-before'
 const contextEdgeRowIdAfter = 'context-edge-after'
+
+// Right-click menu on one tab row. The click offset inside the row rect is
+// kept so the menu stays static relative to its row while scrolling.
+interface TabRowMenuState {
+  tabSourceId: number
+  titleText: string
+  posOpen: { x: number, y: number }
+  offsetX: number
+  offsetY: number
+}
 
 export const SearchPanel = observer(function SearchPanel({
   store
@@ -25,6 +38,7 @@ export const SearchPanel = observer(function SearchPanel({
   store: PopupStore
 }) {
   const resultsRef = useRef<HTMLDivElement>(null)
+  const [tabRowMenu, setTabRowMenu] = useState<TabRowMenuState | null>(null)
   const search = store.tabSearch
   const contextSingle = search.contextSingle
   const isContextMode = search.isContextMode
@@ -51,6 +65,29 @@ export const SearchPanel = observer(function SearchPanel({
       rowEl?.scrollIntoView({ block: 'center' })
     })
   }, [scrollRequestCount, tabCenterSourceId])
+
+  const getTabRowEl = (tabSourceId: number) => (
+    resultsRef.current?.querySelector(`[data-row-id="${tabSourceId}"]`) as HTMLElement | null
+  )
+
+  const openTabRowMenu = (tabSourceId: number, mouseEvent: MouseEvent) => {
+    const itemsVisible = isContextMode && contextSingle ? contextSingle.items : search.items
+    const tabItem = itemsVisible.find((tab) => tab.tabSourceId === tabSourceId)
+    const rowRect = getTabRowEl(tabSourceId)?.getBoundingClientRect()
+    if (!tabItem || !rowRect) return
+    // An already open menu is closed first and the new one appears on the next
+    // frame, so right-clicking another row repositions the menu correctly.
+    setTabRowMenu(null)
+    requestAnimationFrame(() => {
+      setTabRowMenu({
+        tabSourceId,
+        titleText: tabItem.title,
+        posOpen: { x: mouseEvent.clientX, y: mouseEvent.clientY },
+        offsetX: mouseEvent.clientX - rowRect.left,
+        offsetY: mouseEvent.clientY - rowRect.top
+      })
+    })
+  }
 
   // Loading earlier tabs prepends rows. The scroll offset is compensated so the
   // tabs already on screen stay in place and no visual jump happens.
@@ -181,6 +218,8 @@ export const SearchPanel = observer(function SearchPanel({
         {search.messageText || 'Enter text to search open tabs'}
       </div>
 
+      {store.tabBringTarget ? <TabBringPanel store={store} /> : null}
+
       <div className="tab-search-results" ref={resultsRef}>
         <FolderView
           data={{
@@ -240,6 +279,16 @@ export const SearchPanel = observer(function SearchPanel({
                 store.runTabSearchAction('activate', tabSourceId)
               }
             }
+            if (eventType === 'rowContextMenu') {
+              const mouseEvent = eventData.event as MouseEvent | undefined
+              mouseEvent?.preventDefault()
+              const tabSourceId = Number(eventData.rowId)
+              if (mouseEvent && Number.isInteger(tabSourceId)) {
+                openTabRowMenu(tabSourceId, mouseEvent)
+              } else {
+                setTabRowMenu(null)
+              }
+            }
             if (eventType === 'tabCloseAttempt') {
               store.runTabSearchAction('close', Number(eventData.tabSourceId))
             }
@@ -257,15 +306,51 @@ export const SearchPanel = observer(function SearchPanel({
           Load More
         </button>
       ) : null}
+
+      {tabRowMenu ? (
+        <MenuComp
+          data={{
+            items: [
+              { id: 'bring-tabs', label: 'Bring tab(s) before/after' }
+            ]
+          }}
+          config={{
+            isOpen: true,
+            posOpen: tabRowMenu.posOpen,
+            isBackdropScrollPassThrough: true,
+            anchor: {
+              getRect: () => getTabRowEl(tabRowMenu.tabSourceId)?.getBoundingClientRect() ?? null,
+              getTargetEl: () => getTabRowEl(tabRowMenu.tabSourceId),
+              getVisibilityRoot: () => (
+                resultsRef.current?.querySelector('.folder-view-switcher-content') ?? null
+              ),
+              offsetX: tabRowMenu.offsetX,
+              offsetY: tabRowMenu.offsetY
+            }
+          }}
+          onEvent={(eventType: string, eventData: Record<string, unknown>) => {
+            if (eventType === 'closeRequest') {
+              setTabRowMenu(null)
+            }
+            if (eventType === 'itemClick') {
+              const item = eventData.item as { id?: string } | undefined
+              if (item?.id === 'bring-tabs') {
+                store.openTabBring(tabRowMenu.tabSourceId, tabRowMenu.titleText)
+              }
+              setTabRowMenu(null)
+            }
+          }}
+        />
+      ) : null}
     </div>
   )
 })
 
-function SearchTabCell({
+export function SearchTabCell({
   data,
   onEvent
 }: {
-  data?: TabSearchItem & { matchText?: string }
+  data?: TabSearchItem & { matchText?: string, isCloseVisible?: boolean }
   onEvent?: (eventType: string, eventData: Record<string, unknown>) => unknown
 }) {
   if (!data) return null
@@ -312,8 +397,8 @@ function SearchTabCell({
         sizeMode: 'compact',
         responsiveMode: 'container',
         isIconVisible: true,
-        isCloseVisible: true,
-        isCloseEnabled: true
+        isCloseVisible: data.isCloseVisible !== false,
+        isCloseEnabled: data.isCloseVisible !== false
       }}
       onEvent={(eventType) => {
         if (eventType === 'closeAttempt') {

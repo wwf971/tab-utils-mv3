@@ -240,7 +240,13 @@
     ))
   }
 
-  api.runBrowserTabAction = async ({ tabSourceId, tabSourceIds, operation }) => {
+  api.runBrowserTabAction = async ({
+    tabSourceId,
+    tabSourceIds,
+    operation,
+    tabTargetSourceId,
+    placement
+  }) => {
     if (operation === 'close') {
       const tabSourceIdsClose = Array.isArray(tabSourceIds) ? tabSourceIds : [tabSourceId]
       if (tabSourceIdsClose.length === 0 || !tabSourceIdsClose.every(Number.isInteger)) {
@@ -248,6 +254,44 @@
       }
       await chrome.tabs.remove(tabSourceIdsClose)
       return { tabSourceIds: tabSourceIdsClose }
+    }
+    if (operation === 'bringTabs') {
+      const tabSourceIdsBring = Array.isArray(tabSourceIds) ? tabSourceIds : []
+      if (tabSourceIdsBring.length === 0 || !tabSourceIdsBring.every(Number.isInteger)) {
+        throw new Error('Valid tab IDs are required')
+      }
+      if (!Number.isInteger(tabTargetSourceId)) {
+        throw new Error('A valid target tab ID is required')
+      }
+      if (tabSourceIdsBring.includes(tabTargetSourceId)) {
+        throw new Error('The target tab cannot be brought next to itself')
+      }
+      const isBefore = placement === 'before'
+      // Tabs are moved one at a time. Inserting each tab directly before the
+      // target keeps the given order on the left side. For 'after' the last
+      // moved tab becomes the anchor of the next one, which keeps the given
+      // order on the right side.
+      let tabAnchorSourceId = tabTargetSourceId
+      for (const tabSourceIdBring of tabSourceIdsBring) {
+        const tabAnchor = await chrome.tabs.get(tabAnchorSourceId)
+        const tabBring = await chrome.tabs.get(tabSourceIdBring)
+        const isBeforeAnchorInSameWindow = (
+          tabBring.windowId === tabAnchor.windowId &&
+          tabBring.index < tabAnchor.index
+        )
+        // chrome.tabs.move interprets the index as the position after the
+        // moved tab is removed from its old place.
+        const indexTarget = isBefore
+          ? tabAnchor.index - (isBeforeAnchorInSameWindow ? 1 : 0)
+          : tabAnchor.index + (isBeforeAnchorInSameWindow ? 0 : 1)
+        await chrome.tabs.move(tabSourceIdBring, {
+          windowId: tabAnchor.windowId,
+          index: Math.max(0, indexTarget)
+        })
+        if (!isBefore) tabAnchorSourceId = tabSourceIdBring
+      }
+      const tabTarget = await chrome.tabs.get(tabTargetSourceId)
+      return { tabSourceIds: tabSourceIdsBring, windowSourceId: tabTarget.windowId }
     }
     if (!Number.isInteger(tabSourceId)) throw new Error('A valid tab ID is required')
     if (operation === 'activate') {

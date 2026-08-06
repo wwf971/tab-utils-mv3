@@ -159,6 +159,12 @@ export class PopupStore {
   })
   // Search over one loaded snapshot, shown in that snapshot's detail tab.
   snapshotSearchById = new Map<string, TabSearchCore>()
+  // Bring-tabs panel, opened from the right-click menu of one tab in the
+  // Search tab. Its inner search runs on a second core over the live source.
+  tabBringTarget: { tabSourceId: number, titleText: string } | null = null
+  tabBringPlacement: 'before' | 'after' = 'after'
+  tabBringSearch: TabSearchCore | null = null
+  isTabBringApplying = false
 
   constructor() {
     makeAutoObservable(this, {}, { autoBind: true })
@@ -263,6 +269,7 @@ export class PopupStore {
     if (message?.action === 'browserStateChanged') {
       this.tabSearch.queueSearchRefresh()
       this.tabSearch.queueContextRefresh()
+      this.tabBringSearch?.queueSearchRefresh()
     }
     return false
   }
@@ -296,6 +303,7 @@ export class PopupStore {
       searchCore.dispose()
     }
     this.snapshotSearchById.clear()
+    this.closeTabBring()
   }
 
   setSearchButtonOffsetLeft(offsetLeft: number) {
@@ -341,6 +349,76 @@ export class PopupStore {
     } finally {
       runInAction(() => {
         search.setSearchAction(null)
+      })
+    }
+  }
+
+  openTabBring(tabSourceId: number, titleText: string) {
+    this.closeTabBring()
+    this.tabBringTarget = { tabSourceId, titleText }
+    this.tabBringPlacement = 'after'
+    this.tabBringSearch = new TabSearchCore({
+      source: createLiveTabQuerySource(),
+      getContextCountSide: () => this.tabContextCountSide,
+      searchLimit: 100,
+      emptyMessageText: 'Enter text to search tabs to bring'
+    })
+  }
+
+  closeTabBring() {
+    this.tabBringSearch?.dispose()
+    this.tabBringSearch = null
+    this.tabBringTarget = null
+    this.isTabBringApplying = false
+  }
+
+  setTabBringPlacement(placement: 'before' | 'after') {
+    this.tabBringPlacement = placement
+  }
+
+  async applyTabBring() {
+    const search = this.tabBringSearch
+    const target = this.tabBringTarget
+    if (!search || !target || this.isTabBringApplying) return false
+    const placement = this.tabBringPlacement
+    const tabSourceIds = search.selectedIds.filter(
+      (tabSourceId) => tabSourceId !== target.tabSourceId
+    )
+    if (tabSourceIds.length === 0) {
+      search.setMessage('error', 'Select at least one tab to bring')
+      return false
+    }
+    this.isTabBringApplying = true
+    search.setMessage('loading', 'Bringing tabs...')
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'browserTabAction',
+        operation: 'bringTabs',
+        tabTargetSourceId: target.tabSourceId,
+        tabSourceIds,
+        placement
+      })
+      if (!response?.success) throw new Error(response?.error ?? 'Tab bring failed')
+      runInAction(() => {
+        this.tabSearch.setMessage(
+          'success',
+          tabSourceIds.length === 1
+            ? `Tab brought ${placement} the target tab`
+            : `${tabSourceIds.length} tabs brought ${placement} the target tab`
+        )
+        this.closeTabBring()
+      })
+      if (this.tabSearch.isContextMode) await this.tabSearch.refreshContexts()
+      if (this.tabSearch.textCommitted) await this.tabSearch.search(true)
+      return true
+    } catch (error) {
+      runInAction(() => {
+        search.setMessage('error', getErrorText(error))
+      })
+      return false
+    } finally {
+      runInAction(() => {
+        this.isTabBringApplying = false
       })
     }
   }

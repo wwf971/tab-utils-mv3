@@ -1,0 +1,102 @@
+.tab-bring-panel {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
+  padding: 4px;
+  border: 1px solid #94a3b8;
+  border-radius: 1px;
+  background: #f8fafc;
+}
+
+.tab-bring-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: #334155;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.tab-bring-placement-button {
+  min-height: 20px;
+  padding: 1px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 1px;
+  color: #334155;
+  background: #ffffff;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab-bring-placement-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.tab-bring-placement-button-active {
+  border-color: #1a73e8;
+  color: #1a73e8;
+  background: #e8f0fe;
+}
+
+.tab-bring-target-title {
+  min-width: 0;
+  overflow: hidden;
+  color: #1f2937;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-bring-check {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  margin: 0 auto;
+  border: 1px solid #94a3b8;
+  border-radius: 1px;
+  color: #ffffff;
+  background: #ffffff;
+}
+
+.tab-bring-check svg {
+  width: 9px;
+  height: 9px;
+}
+
+.tab-bring-check-checked {
+  border-color: #1a73e8;
+  background: #1a73e8;
+}
+
+.tab-bring-check-disabled {
+  border-color: #d7dde4;
+  background: #eef1f4;
+}
+
+/* The check column cell must center its content vertically next to the tab row */
+.tab-bring-results .folder-body-cell:first-child .folder-body-cell-content-custom {
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+/* The target tab cannot be brought next to itself; it is shown greyed out */
+.tab-bring-results .folder-body-row.tab-bring-row-target .tab-item {
+  background: #f1f5f9;
+  opacity: 0.5;
+}
+
+.tab-bring-actions {
+  display: flex;
+  gap: 3px;
+}
