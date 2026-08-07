@@ -51,7 +51,7 @@ Search and save utilities read this maintained state. They do not each scan the 
 
 For tracker lifecycle, event sharing, selected tabs, and APIs, refer to [Live browser state](./browser_state.md).
 
-For result selection and the nearby-tabs context view of the popup search panel, refer to [Tab search selection and context view](./search_context.md).
+For result selection, the nearby-tabs context view, and the bring-tabs operation of the popup search panel, refer to [Tab operations in the popup](./tab_ops.md).
 
 For the common window, tab, and group format, refer to [Browser state data](./browser_state_data.md).
 

@@ -54,6 +54,57 @@
   white-space: nowrap;
 }
 
+.tab-bring-target-title-empty {
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+/* The special option row picking the current active tab */
+.tab-bring-option-current {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px 3px;
+  color: #334155;
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tab-bring-option-current:hover {
+  background: #eef2f7;
+}
+
+.tab-bring-option-current-disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.tab-bring-option-current-label {
+  flex-shrink: 0;
+}
+
+.tab-bring-option-current-title {
+  min-width: 0;
+  overflow: hidden;
+  color: #1f2937;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Picking the current tab as the target forbids searching */
+.tab-bring-search-forbidden {
+  color: #94a3b8;
+  background: #f1f5f9;
+}
+
+.tab-bring-results-forbidden {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
 .tab-bring-check {
   box-sizing: border-box;
   display: flex;
@@ -90,8 +141,8 @@
   height: 100%;
 }
 
-/* The target tab cannot be brought next to itself; it is shown greyed out */
-.tab-bring-results .folder-body-row.tab-bring-row-target .tab-item {
+/* Tabs on the fixed side of the operation cannot be picked; they are greyed */
+.tab-bring-results .folder-body-row.tab-bring-row-unpickable .tab-item {
   background: #f1f5f9;
   opacity: 0.5;
 }

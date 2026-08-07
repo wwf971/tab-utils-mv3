@@ -182,7 +182,7 @@ Initial actions:
 - `browserStateGet`
 - `browserStateRefresh`
 - `browserStateQueryTabs`
-- `browserStateQueryTabContext` for the slice of tabs around one tab; refer to [Tab search selection and context view](./search_context.md)
+- `browserStateQueryTabContext` for the slice of tabs around one tab; refer to [Tab operations in the popup](./tab_ops.md)
 
 All responses use:
 

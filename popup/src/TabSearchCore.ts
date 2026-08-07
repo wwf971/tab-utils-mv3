@@ -273,6 +273,13 @@ export class TabSearchCore {
     return this.contextSingle ? this.contextSingle.selectedIds : this.selectedIds
   }
 
+  // Selected items of the visible view, in row order instead of click order.
+  get visibleSelectedItems() {
+    const items = this.contextSingle ? this.contextSingle.items : this.items
+    const tabSourceIdSet = new Set(this.visibleSelectedIds)
+    return items.filter((tab) => tabSourceIdSet.has(tab.tabSourceId))
+  }
+
   get visibleSelectedFirst() {
     const items = this.contextSingle ? this.contextSingle.items : this.items
     const tabSourceIdFirst = this.visibleSelectedIds[0]

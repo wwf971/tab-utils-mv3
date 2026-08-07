@@ -10,6 +10,7 @@ import {
   createLiveTabQuerySource,
   createWindowsTabQuerySource
 } from './TabSearchCore'
+import { TabBringCore, type TabBringRef } from './TabBringCore'
 
 export interface RetentionTier {
   ageMaxMinute: number | null
@@ -159,12 +160,11 @@ export class PopupStore {
   })
   // Search over one loaded snapshot, shown in that snapshot's detail tab.
   snapshotSearchById = new Map<string, TabSearchCore>()
-  // Bring-tabs panel, opened from the right-click menu of one tab in the
-  // Search tab. Its inner search runs on a second core over the live source.
-  tabBringTarget: { tabSourceId: number, titleText: string } | null = null
-  tabBringPlacement: 'before' | 'after' = 'after'
-  tabBringSearch: TabSearchCore | null = null
-  isTabBringApplying = false
+  // Bring-tabs panel, opened from the right-click menu of the Search tab.
+  // Refer to TabBringCore for the operation model.
+  tabBring: TabBringCore | null = null
+  // Raised on every open; the panel is keyed by it so a reopen remounts it.
+  tabBringOpenCount = 0
 
   constructor() {
     makeAutoObservable(this, {}, { autoBind: true })
@@ -269,7 +269,7 @@ export class PopupStore {
     if (message?.action === 'browserStateChanged') {
       this.tabSearch.queueSearchRefresh()
       this.tabSearch.queueContextRefresh()
-      this.tabBringSearch?.queueSearchRefresh()
+      this.tabBring?.search.queueSearchRefresh()
     }
     return false
   }
@@ -353,48 +353,59 @@ export class PopupStore {
     }
   }
 
-  openTabBring(tabSourceId: number, titleText: string) {
-    this.closeTabBring()
-    this.tabBringTarget = { tabSourceId, titleText }
-    this.tabBringPlacement = 'after'
-    this.tabBringSearch = new TabSearchCore({
-      source: createLiveTabQuerySource(),
-      getContextCountSide: () => this.tabContextCountSide,
-      searchLimit: 100,
-      emptyMessageText: 'Enter text to search tabs to bring'
+  // The current tab is resolved once at open time, so the panel can show it
+  // as the special "current tab" option and apply on a concrete tab ID.
+  async openTabBring(options: {
+    pickSide: 'source' | 'target'
+    tabTargetFixed?: TabBringRef
+    tabsSourceFixed?: TabBringRef[]
+    isTabCurrentPicked?: boolean
+  }) {
+    let tabCurrent: TabBringRef | null = null
+    try {
+      const tabsActive = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
+      const tabActive = tabsActive[0]
+      if (Number.isInteger(tabActive?.id)) {
+        tabCurrent = {
+          tabSourceId: tabActive.id as number,
+          titleText: tabActive.title ?? ''
+        }
+      }
+    } catch {
+      tabCurrent = null
+    }
+    runInAction(() => {
+      this.closeTabBring()
+      this.tabBring = new TabBringCore({
+        pickSide: options.pickSide,
+        tabTargetFixed: options.tabTargetFixed ?? null,
+        tabsSourceFixed: options.tabsSourceFixed ?? [],
+        tabCurrent,
+        isTabCurrentPicked: options.isTabCurrentPicked === true && tabCurrent !== null,
+        getContextCountSide: () => this.tabContextCountSide
+      })
+      this.tabBringOpenCount += 1
     })
   }
 
   closeTabBring() {
-    this.tabBringSearch?.dispose()
-    this.tabBringSearch = null
-    this.tabBringTarget = null
-    this.isTabBringApplying = false
-  }
-
-  setTabBringPlacement(placement: 'before' | 'after') {
-    this.tabBringPlacement = placement
+    this.tabBring?.dispose()
+    this.tabBring = null
   }
 
   async applyTabBring() {
-    const search = this.tabBringSearch
-    const target = this.tabBringTarget
-    if (!search || !target || this.isTabBringApplying) return false
-    const placement = this.tabBringPlacement
-    const tabSourceIds = search.selectedIds.filter(
-      (tabSourceId) => tabSourceId !== target.tabSourceId
-    )
-    if (tabSourceIds.length === 0) {
-      search.setMessage('error', 'Select at least one tab to bring')
-      return false
-    }
-    this.isTabBringApplying = true
-    search.setMessage('loading', 'Bringing tabs...')
+    const bring = this.tabBring
+    if (!bring || bring.isApplying || !bring.isApplyReady) return false
+    const placement = bring.placement
+    const tabTargetSourceId = bring.tabTarget?.tabSourceId as number
+    const tabSourceIds = bring.tabSourceIdsApply
+    bring.setApplying(true)
+    bring.search.setMessage('loading', 'Bringing tabs...')
     try {
       const response = await chrome.runtime.sendMessage({
         action: 'browserTabAction',
         operation: 'bringTabs',
-        tabTargetSourceId: target.tabSourceId,
+        tabTargetSourceId,
         tabSourceIds,
         placement
       })
@@ -413,13 +424,10 @@ export class PopupStore {
       return true
     } catch (error) {
       runInAction(() => {
-        search.setMessage('error', getErrorText(error))
+        bring.search.setMessage('error', getErrorText(error))
+        bring.setApplying(false)
       })
       return false
-    } finally {
-      runInAction(() => {
-        this.isTabBringApplying = false
-      })
     }
   }
 

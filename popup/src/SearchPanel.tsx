@@ -48,9 +48,10 @@ export const SearchPanel = observer(function SearchPanel({
   )
   const tabSelectedCount = search.visibleSelectedIds.length
   const isTabSelected = tabSelectedCount > 0
+  // Move/duplicate act relative to the current active tab, one tab at a time.
   const isRelativeActionDisabled = (
     isActionBusy ||
-    !isTabSelected ||
+    tabSelectedCount !== 1 ||
     search.isVisibleSelectedCurrentActive
   )
 
@@ -103,6 +104,59 @@ export const SearchPanel = observer(function SearchPanel({
         scrollEl.scrollTop = scrollTopBefore + (scrollEl.scrollHeight - scrollHeightBefore)
       })
     }
+  }
+
+  // Tab row IDs in display order. Edge rows of the context view are excluded
+  // so shift-range selection only covers real tabs.
+  const tabRowIdsOrder = (
+    isContextMode && contextSingle ? contextSingle.items : search.items
+  ).map((tab) => String(tab.tabSourceId))
+
+  const setVisibleSelectedIds = (tabSourceIds: number[]) => {
+    if (isContextMode && contextSingle) {
+      search.setContextSelectedIds(contextSingle.windowSourceId, tabSourceIds)
+    } else {
+      search.setSelectedIds(tabSourceIds)
+    }
+  }
+
+  // Same ctrl/shift rules as the FolderView multi-select example.
+  const applyTabRowClickSelect = (
+    rowId: string,
+    modifiers: { ctrl?: boolean, meta?: boolean, shift?: boolean }
+  ) => {
+    const tabSourceId = Number(rowId)
+    if (!Number.isInteger(tabSourceId)) return
+    const rowIdsSelected = search.visibleSelectedIds.map(String)
+    const isCtrlPressed = modifiers.ctrl === true || modifiers.meta === true
+    if (isCtrlPressed) {
+      if (rowIdsSelected.includes(rowId)) {
+        setVisibleSelectedIds(
+          rowIdsSelected.filter((id) => id !== rowId).map(Number)
+        )
+      } else {
+        setVisibleSelectedIds([...rowIdsSelected, rowId].map(Number))
+      }
+      return
+    }
+    if (modifiers.shift === true && rowIdsSelected.length > 0) {
+      const indexAnchor = tabRowIdsOrder.indexOf(
+        rowIdsSelected[rowIdsSelected.length - 1]
+      )
+      const indexCurrent = tabRowIdsOrder.indexOf(rowId)
+      if (indexAnchor < 0 || indexCurrent < 0) {
+        setVisibleSelectedIds([tabSourceId])
+        return
+      }
+      const indexStart = Math.min(indexAnchor, indexCurrent)
+      const indexEnd = Math.max(indexAnchor, indexCurrent)
+      const rowIdsRange = tabRowIdsOrder.slice(indexStart, indexEnd + 1)
+      setVisibleSelectedIds(
+        [...new Set([...rowIdsSelected, ...rowIdsRange])].map(Number)
+      )
+      return
+    }
+    setVisibleSelectedIds([tabSourceId])
   }
 
   const rows = isContextMode && contextSingle
@@ -181,7 +235,7 @@ export const SearchPanel = observer(function SearchPanel({
             id: 'context',
             labelText: isContextMode ? 'Exit Context' : 'Context',
             className: 'tab-search-control-button-context',
-            isDisabled: isActionBusy || (!isContextMode && !isTabSelected),
+            isDisabled: isActionBusy || (!isContextMode && tabSelectedCount !== 1),
             onClick: () => {
               if (isContextMode) search.exitContextAll()
               else void search.enterContext(search.selectedIds[0])
@@ -218,7 +272,9 @@ export const SearchPanel = observer(function SearchPanel({
         {search.messageText || 'Enter text to search open tabs'}
       </div>
 
-      {store.tabBringTarget ? <TabBringPanel store={store} /> : null}
+      {store.tabBring ? (
+        <TabBringPanel store={store} key={store.tabBringOpenCount} />
+      ) : null}
 
       <div className="tab-search-results" ref={resultsRef}>
         <FolderView
@@ -245,7 +301,7 @@ export const SearchPanel = observer(function SearchPanel({
             isStatusBarVisible: false,
             isLocked: isActionBusy,
             isRowReorderAllowed: false,
-            selectionMode: 'single',
+            selectionMode: 'multiple',
             compBodyByColId: (colId: string, rowId: string) => {
               if (colId !== 'tab') return undefined
               if (rowId === contextEdgeRowIdBefore || rowId === contextEdgeRowIdAfter) {
@@ -255,19 +311,40 @@ export const SearchPanel = observer(function SearchPanel({
             }
           }}
           onEvent={async (eventType, eventData) => {
-            if (eventType === 'rowIdsSelectedChange') {
-              const rowIds = (eventData.rowIdsSelected as string[] | undefined) ?? []
-              const isEdgeRowClicked = rowIds.some((rowId) => (
-                rowId === contextEdgeRowIdBefore || rowId === contextEdgeRowIdAfter
-              ))
-              if (!isEdgeRowClicked) {
-                const tabSourceIds = rowIds.map(Number).filter(Number.isInteger)
-                if (isContextMode && contextSingle) {
-                  search.setContextSelectedIds(contextSingle.windowSourceId, tabSourceIds)
-                } else {
-                  search.setSelectedIds(tabSourceIds)
+            // Click selection follows the FolderView multi-select example via
+            // rowInteraction. Built-in rowIdsSelectedChange is only used to
+            // clear the selection when clicking empty space.
+            if (eventType === 'rowInteraction') {
+              const rowId = String(eventData.rowId ?? '')
+              if (
+                rowId === contextEdgeRowIdBefore ||
+                rowId === contextEdgeRowIdAfter
+              ) {
+                return { code: 0 }
+              }
+              if (eventData.type === 'click') {
+                applyTabRowClickSelect(
+                  rowId,
+                  (eventData.modifiers as {
+                    ctrl?: boolean
+                    meta?: boolean
+                    shift?: boolean
+                  }) ?? {}
+                )
+              }
+              if (eventData.type === 'context-menu') {
+                const tabSourceId = Number(rowId)
+                if (
+                  Number.isInteger(tabSourceId) &&
+                  !search.visibleSelectedIds.includes(tabSourceId)
+                ) {
+                  setVisibleSelectedIds([tabSourceId])
                 }
               }
+            }
+            if (eventType === 'rowIdsSelectedChange') {
+              const rowIds = (eventData.rowIdsSelected as string[] | undefined) ?? []
+              if (rowIds.length === 0) setVisibleSelectedIds([])
             }
             if (eventType === 'rowClick') {
               if (eventData.rowId === contextEdgeRowIdBefore) void loadMoreTabContext('before')
@@ -309,11 +386,7 @@ export const SearchPanel = observer(function SearchPanel({
 
       {tabRowMenu ? (
         <MenuComp
-          data={{
-            items: [
-              { id: 'bring-tabs', label: 'Bring tab(s) before/after' }
-            ]
-          }}
+          data={{ items: getTabRowMenuItems(search, tabRowMenu) }}
           config={{
             isOpen: true,
             posOpen: tabRowMenu.posOpen,
@@ -334,8 +407,33 @@ export const SearchPanel = observer(function SearchPanel({
             }
             if (eventType === 'itemClick') {
               const item = eventData.item as { id?: string } | undefined
-              if (item?.id === 'bring-tabs') {
-                store.openTabBring(tabRowMenu.tabSourceId, tabRowMenu.titleText)
+              const tabTargetFixed = {
+                tabSourceId: tabRowMenu.tabSourceId,
+                titleText: tabRowMenu.titleText
+              }
+              const tabsSourceFixed = search.visibleSelectedItems.map((tab) => ({
+                tabSourceId: tab.tabSourceId,
+                titleText: tab.title
+              }))
+              if (item?.id === 'bring-current-to-it') {
+                void store.openTabBring({
+                  pickSide: 'source',
+                  tabTargetFixed,
+                  isTabCurrentPicked: true
+                })
+              }
+              if (item?.id === 'bring-tabs-to-it') {
+                void store.openTabBring({ pickSide: 'source', tabTargetFixed })
+              }
+              if (item?.id === 'bring-to-current') {
+                void store.openTabBring({
+                  pickSide: 'target',
+                  tabsSourceFixed,
+                  isTabCurrentPicked: true
+                })
+              }
+              if (item?.id === 'bring-to-target') {
+                void store.openTabBring({ pickSide: 'target', tabsSourceFixed })
               }
               setTabRowMenu(null)
             }
@@ -345,6 +443,53 @@ export const SearchPanel = observer(function SearchPanel({
     </div>
   )
 })
+
+// Menu items depend on the selection: the "before/after it" pair needs one
+// selected tab (the right-clicked one); the "before/after current tab" and
+// "before/after a target tab" pair takes any selection as the source tabs.
+function getTabRowMenuItems(
+  search: PopupStore['tabSearch'],
+  tabRowMenu: TabRowMenuState
+) {
+  const tabsSelected = search.visibleSelectedItems
+  const tabClicked = tabsSelected.find(
+    (tab) => tab.tabSourceId === tabRowMenu.tabSourceId
+  )
+  const isTabClickedCurrent = (
+    tabClicked?.isActive === true && tabClicked?.isWindowFocused === true
+  )
+  const isSelectionCurrentOnly = (
+    tabsSelected.length === 1 &&
+    tabsSelected[0].isActive &&
+    tabsSelected[0].isWindowFocused
+  )
+  const items = []
+  if (tabsSelected.length === 1) {
+    items.push(
+      {
+        id: 'bring-current-to-it',
+        label: 'Bring current tab before/after it',
+        isDisabled: isTabClickedCurrent
+      },
+      {
+        id: 'bring-tabs-to-it',
+        label: 'Bring other tabs before/after it'
+      }
+    )
+  }
+  items.push(
+    {
+      id: 'bring-to-current',
+      label: 'Bring before/after current tab',
+      isDisabled: isSelectionCurrentOnly
+    },
+    {
+      id: 'bring-to-target',
+      label: 'Bring before/after a target tab'
+    }
+  )
+  return items
+}
 
 export function SearchTabCell({
   data,
