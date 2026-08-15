@@ -19,6 +19,7 @@ import {
   type SnapshotMaintenance
 } from './PopupStore'
 import { SearchPanel } from './SearchPanel'
+import { RemotePanel } from './remote/RemotePanel'
 import './App.css'
 
 const badgeCurrentWindowValue = 'currentWindow'
@@ -30,6 +31,14 @@ const SearchWorkspaceControl = observer(function SearchWorkspaceControl({
   const store = value as PopupStore | null
   if (!store) return <div className="search-workspace-loading">Loading tab search...</div>
   return <SearchPanel store={store} />
+})
+
+const RemoteWorkspaceControl = observer(function RemoteWorkspaceControl({
+  value
+}: ConfigCustomControlProps) {
+  const store = value as PopupStore | null
+  if (!store) return <div className="search-workspace-loading">Loading remote tabs...</div>
+  return <RemotePanel store={store.remote} />
 })
 
 function BadgeTabCountControl({
@@ -736,6 +745,7 @@ const PopupConfigContent = observer(function PopupConfigContent({
 }) {
   const settings = {
     searchWorkspace: store,
+    remoteWorkspace: store,
     enable_move_new_tab_next_to_current: store.isMoveNewTabNextToCurrentEnabled,
     search_context_tab_count_side: store.tabContextCountSide,
     badge_tab_counts: store.badgeTabCounts,
@@ -773,6 +783,29 @@ const PopupConfigContent = observer(function PopupConfigContent({
                 label: 'Search open tabs',
                 type: 'custom',
                 compName: 'searchWorkspace',
+                isFullWidth: true,
+                defaultValue: null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        id: 'remote_subtab',
+        name: 'Remote',
+        type: 'subtab',
+        children: [
+          {
+            id: 'remote_group',
+            label: 'Remote tabs',
+            type: 'group',
+            isFrameVisible: false,
+            children: [
+              {
+                id: 'remoteWorkspace',
+                label: 'Remote tabs',
+                type: 'custom',
+                compName: 'remoteWorkspace',
                 isFullWidth: true,
                 defaultValue: null
               }
@@ -980,6 +1013,7 @@ const PopupConfigContent = observer(function PopupConfigContent({
     ],
     getComp: (compName: string) => {
       if (compName === 'searchWorkspace') return SearchWorkspaceControl
+      if (compName === 'remoteWorkspace') return RemoteWorkspaceControl
       if (compName === 'badgeTabCount') return BadgeTabCountControl
       if (compName === 'localStorageOverview') return LocalStorageOverviewControl
       if (compName === 'snapshotInterval') return SnapshotIntervalControl

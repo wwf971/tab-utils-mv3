@@ -17,6 +17,7 @@ import {
 import { PopupStore } from './PopupStore'
 import { type TabSearchItem } from './TabSearchCore'
 import { TabBringPanel } from './TabBringPanel'
+import { RemoteUploadPanel } from './remote/RemoteUploadPanel'
 import './SearchPanel.css'
 
 const contextEdgeRowIdBefore = 'context-edge-before'
@@ -276,6 +277,10 @@ export const SearchPanel = observer(function SearchPanel({
         <TabBringPanel store={store} key={store.tabBringOpenCount} />
       ) : null}
 
+      {store.remote.uploadPanel ? (
+        <RemoteUploadPanel store={store} key={store.remote.uploadPanelOpenCount} />
+      ) : null}
+
       <div className="tab-search-results" ref={resultsRef}>
         <FolderView
           data={{
@@ -435,6 +440,26 @@ export const SearchPanel = observer(function SearchPanel({
               if (item?.id === 'bring-to-target') {
                 void store.openTabBring({ pickSide: 'target', tabsSourceFixed })
               }
+              if (item?.id === 'upload-selected-to-remote') {
+                store.openRemoteUploadForTabs(
+                  search.visibleSelectedItems.map((tab) => ({
+                    tabSourceId: tab.tabSourceId,
+                    title: tab.title,
+                    url: tab.url
+                  }))
+                )
+              }
+              if (item?.id === 'upload-window-to-remote') {
+                const itemsVisible = search.contextSingle
+                  ? search.contextSingle.items
+                  : search.items
+                const tabClicked = itemsVisible.find(
+                  (tab) => tab.tabSourceId === tabRowMenu.tabSourceId
+                )
+                if (tabClicked) {
+                  void store.openRemoteUploadForWindow(tabClicked.windowSourceId)
+                }
+              }
               setTabRowMenu(null)
             }
           }}
@@ -486,6 +511,15 @@ function getTabRowMenuItems(
     {
       id: 'bring-to-target',
       label: 'Bring before/after a target tab'
+    },
+    {
+      id: 'upload-selected-to-remote',
+      label: `Upload selected tab(s) to remote (${tabsSelected.length})`,
+      isDisabled: tabsSelected.length === 0
+    },
+    {
+      id: 'upload-window-to-remote',
+      label: 'Upload this window to remote'
     }
   )
   return items

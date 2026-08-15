@@ -11,6 +11,7 @@ import {
   createWindowsTabQuerySource
 } from './TabSearchCore'
 import { TabBringCore, type TabBringRef } from './TabBringCore'
+import { RemoteStore, type RemoteUploadTab } from './remote/RemoteStore'
 
 export interface RetentionTier {
   ageMaxMinute: number | null
@@ -165,9 +166,14 @@ export class PopupStore {
   tabBring: TabBringCore | null = null
   // Raised on every open; the panel is keyed by it so a reopen remounts it.
   tabBringOpenCount = 0
+  // Remote (tab cloud) features, in their own store. Refer to
+  // backend/tab_cloud.md for the overall design.
+  remote = new RemoteStore({
+    getContextCountSide: () => this.tabContextCountSide
+  })
 
   constructor() {
-    makeAutoObservable(this, {}, { autoBind: true })
+    makeAutoObservable(this, { remote: false }, { autoBind: true })
   }
 
   get isSnapshotBusy() {
@@ -176,6 +182,7 @@ export class PopupStore {
 
   async initialize() {
     this.startRecoveryUpdates()
+    void this.remote.init()
     try {
       const [settingsResult, snapshotResponse] = await Promise.all([
         chrome.storage.sync.get([
@@ -304,6 +311,34 @@ export class PopupStore {
     }
     this.snapshotSearchById.clear()
     this.closeTabBring()
+    this.remote.dispose()
+  }
+
+  // Upload panel in the Search tab: openers resolve the local tabs to upload;
+  // the apply result lands in the search message line.
+  openRemoteUploadForTabs(tabs: RemoteUploadTab[]) {
+    if (tabs.length === 0) {
+      this.tabSearch.setMessage('error', 'Select at least one tab to upload')
+      return
+    }
+    this.remote.openUploadPanel(tabs, 'selected tabs')
+  }
+
+  async openRemoteUploadForWindow(windowSourceId: number) {
+    await this.remote.openUploadPanelForWindow(windowSourceId)
+  }
+
+  async applyRemoteUpload() {
+    const result = await this.remote.applyUpload()
+    runInAction(() => {
+      this.tabSearch.setMessage(result.isOk ? 'success' : 'error', result.messageText)
+      if (result.isOk) this.remote.closeUploadPanel()
+    })
+    if (result.isOk) {
+      if (this.tabSearch.isContextMode) await this.tabSearch.refreshContexts()
+      if (this.tabSearch.textCommitted) await this.tabSearch.search(true)
+    }
+    return result.isOk
   }
 
   setSearchButtonOffsetLeft(offsetLeft: number) {

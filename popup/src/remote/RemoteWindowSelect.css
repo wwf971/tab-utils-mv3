@@ -1,0 +1,210 @@
+.remote-window-select {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+}
+
+.remote-window-select-bar {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid #d1d5db;
+  border-radius: 2px;
+  background: #fff;
+  padding: 2px 4px;
+  min-height: 22px;
+}
+
+.remote-window-select-tags {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+  overflow-x: hidden;
+  white-space: nowrap;
+}
+
+.remote-window-select-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: #eef2f7;
+  border: 1px solid #d1d5db;
+  border-radius: 2px;
+  padding: 0 2px 0 4px;
+  font-size: 12px;
+  flex: none;
+  max-width: 240px;
+}
+
+.remote-window-select-tag-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-window-select-tag-cross {
+  display: inline-flex;
+  cursor: pointer;
+  width: 12px;
+  height: 12px;
+  color: #6b7280;
+}
+
+.remote-window-select-tag-cross:hover {
+  color: #111827;
+}
+
+.remote-window-select-tag-cross svg {
+  width: 12px;
+  height: 12px;
+}
+
+.remote-window-select-empty {
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.remote-window-select-edit {
+  display: inline-flex;
+  cursor: pointer;
+  width: 14px;
+  height: 14px;
+  color: #6b7280;
+  flex: none;
+}
+
+.remote-window-select-edit:hover,
+.remote-window-select-edit-open {
+  color: #1f2937;
+}
+
+.remote-window-select-edit svg {
+  width: 14px;
+  height: 14px;
+}
+
+.remote-window-select-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  margin-top: 2px;
+  border: 1px solid #d1d5db;
+  border-radius: 2px;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 220px;
+}
+
+.remote-window-select-search {
+  border: 1px solid #d1d5db;
+  border-radius: 2px;
+  padding: 2px 4px;
+  font-size: 12px;
+  min-height: 16px;
+  outline: none;
+}
+
+.remote-window-select-search-empty::before {
+  content: attr(data-placeholder);
+  color: #9ca3af;
+  pointer-events: none;
+}
+
+.remote-window-select-buttons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.remote-window-select-button {
+  border: 1px solid #d1d5db;
+  border-radius: 2px;
+  background: #f9fafb;
+  font-size: 11px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+
+.remote-window-select-button:disabled {
+  color: #9ca3af;
+  cursor: default;
+}
+
+.remote-window-select-count {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.remote-window-select-list {
+  overflow-y: auto;
+  min-height: 40px;
+  display: flex;
+  flex-direction: column;
+}
+
+.remote-window-select-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+
+.remote-window-select-item:hover {
+  background: #f3f4f6;
+}
+
+.remote-window-select-item-selected {
+  background: #e0edff;
+}
+
+.remote-window-select-item-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-window-select-item-info {
+  color: #9ca3af;
+  font-size: 11px;
+  flex: none;
+}
+
+.remote-window-select-loading {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: #9ca3af;
+  font-size: 12px;
+  padding: 6px 4px;
+}
+
+.remote-window-select-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid #d1d5db;
+  border-top-color: #6b7280;
+  border-radius: 50%;
+  animation: remote-window-select-spin 0.8s linear infinite;
+  flex: none;
+}
+
+@keyframes remote-window-select-spin {
+  to { transform: rotate(360deg); }
+}
+
+.remote-match-highlight {
+  background: #fde047;
+}

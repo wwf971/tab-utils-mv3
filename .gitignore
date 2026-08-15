@@ -13,6 +13,7 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
+.venv/
 
 # Build files
 *.crx
@@ -30,6 +31,9 @@ yarn-debug.log*
 yarn-error.log*
 
 issue_*.md
+
+# real config, refer to config-two-layer
+config.0.*
 
 # Temporary files
 *.tmp

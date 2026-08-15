@@ -1,0 +1,47 @@
+.remote-upload-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid #93c5fd;
+  border-radius: 2px;
+  background: #f5f9ff;
+  padding: 4px;
+}
+
+.remote-upload-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.remote-upload-target {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.remote-upload-target-label {
+  font-size: 12px;
+  color: #374151;
+  flex: none;
+}
+
+.remote-upload-option {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #374151;
+  cursor: pointer;
+  user-select: none;
+}
+
+.remote-upload-option-disabled {
+  color: #9ca3af;
+  cursor: default;
+}
+
+.remote-upload-actions {
+  display: flex;
+  gap: 4px;
+}

@@ -6,9 +6,11 @@ This section describes features implemented under the 'Search' tab's page in the
 
 The search panel lets the user find open tabs, select results, and act on them. All views read the maintained live browser state through the background; refer to [Live browser state](./browser_state.md). No view queries browser tab APIs directly.
 
+
 `PopupStore` is the source of truth: the fetched items, the selected tab IDs of each view, the loaded context range, and the running action. `SearchPanel` renders from the store and sends user attempts back to it. The search state itself lives in a reusable `TabSearchCore` class, which the snapshot detail view also uses over its own steady data.
 
-### Result selection
+
+### Search result selection behavior
 
 Rows support multiple selection: plain click selects one row, shift+click selects a range, ctrl+click toggles one row. Right-clicking a row inside the selection keeps the selection; right-clicking outside it selects just that row.
 
@@ -55,6 +57,8 @@ An edge row has three states with one fixed height, so switching states never sh
 When earlier tabs are prepended, the panel compensates the scroll offset so the tabs already on screen stay visually in place.
 
 #### Event updates
+
+In context mode, changes of browser state should be reflected real-time. For example, if tabs displayed in context has delete/create/move events, then this should be reflected real-time.
 
 ```text
 background publishes browserStateChanged
