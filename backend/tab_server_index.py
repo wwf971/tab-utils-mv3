@@ -2,7 +2,7 @@
 # Index layer of tab cloud: a general api backed by an elasticsearch
 # implementation. Core logic must only call the general functions here:
 #
-#   index_ensure / index_check
+#   index_ensure / index_recreate / index_check
 #   doc_put / doc_delete / doc_put_batch / doc_delete_batch
 #   search(user_id, query_tree, field_list, is_trashed, limit)
 #
@@ -45,14 +45,36 @@ def _wrap_index_call(call):
 def index_check():
 	try:
 		if not _es.ping():
-			return {"isOk": False, "isExisting": False, "indexName": _index_name,
-					"message": "elasticsearch not reachable"}
+			return _index_status_error("elasticsearch not reachable")
 		is_existing = bool(_es.indices.exists(index=_index_name))
-		return {"isOk": True, "isExisting": is_existing, "indexName": _index_name,
-				"message": ""}
+		if not is_existing:
+			return {
+				"isOk": True,
+				"isExisting": False,
+				"isConfigConsistent": None,
+				"indexName": _index_name,
+				"documentCount": None,
+				"configIssueList": [],
+				"message": "",
+			}
+		settings_response = _es.indices.get_settings(index=_index_name)
+		mapping_response = _es.indices.get_mapping(index=_index_name)
+		document_count = int(_es.count(index=_index_name).get("count", 0))
+		config_issue_list = _index_config_issue_list(
+			settings_response[_index_name].get("settings", {}),
+			mapping_response[_index_name].get("mappings", {}),
+		)
+		return {
+			"isOk": True,
+			"isExisting": True,
+			"isConfigConsistent": len(config_issue_list) == 0,
+			"indexName": _index_name,
+			"documentCount": document_count,
+			"configIssueList": config_issue_list,
+			"message": "",
+		}
 	except Exception as error:
-		return {"isOk": False, "isExisting": False, "indexName": _index_name,
-				"message": str(error)}
+		return _index_status_error(str(error))
 
 
 def index_ensure():
@@ -62,6 +84,61 @@ def index_ensure():
 		_es.indices.create(index=_index_name, body=_index_body())
 		return True
 	return _wrap_index_call(call)
+
+
+def index_recreate():
+	def call():
+		if _es.indices.exists(index=_index_name):
+			_es.indices.delete(index=_index_name)
+		_es.indices.create(index=_index_name, body=_index_body())
+	return _wrap_index_call(call)
+
+
+def _index_status_error(message):
+	return {
+		"isOk": False,
+		"isExisting": False,
+		"isConfigConsistent": None,
+		"indexName": _index_name,
+		"documentCount": None,
+		"configIssueList": [],
+		"message": message,
+	}
+
+
+def _index_config_issue_list(settings, mappings):
+	expected = _index_body()
+	settings_actual = settings.get("index", settings)
+	settings_expected = expected["settings"]
+	issue_list = []
+	_compare_config_required(
+		settings_actual, settings_expected, "settings", issue_list)
+	_compare_config_required(
+		mappings, expected["mappings"], "mappings", issue_list)
+	return issue_list
+
+
+def _compare_config_required(actual, expected, path, issue_list):
+	if isinstance(expected, dict):
+		if not isinstance(actual, dict):
+			issue_list.append(f"{path}: expected an object")
+			return
+		for key, value_expected in expected.items():
+			path_child = f"{path}.{key}"
+			if key not in actual:
+				issue_list.append(f"{path_child}: missing")
+				continue
+			_compare_config_required(actual[key], value_expected, path_child, issue_list)
+		return
+	if isinstance(expected, list):
+		if not isinstance(actual, (list, tuple)):
+			issue_list.append(f"{path}: expected {expected}, got {actual}")
+			return
+		if list(actual) != expected:
+			issue_list.append(f"{path}: expected {expected}, got {actual}")
+		return
+	if str(actual) != str(expected):
+		issue_list.append(f"{path}: expected {expected}, got {actual}")
 
 
 def _char_field():

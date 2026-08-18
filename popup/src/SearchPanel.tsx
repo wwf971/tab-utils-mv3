@@ -391,7 +391,7 @@ export const SearchPanel = observer(function SearchPanel({
 
       {tabRowMenu ? (
         <MenuComp
-          data={{ items: getTabRowMenuItems(search, tabRowMenu) }}
+          data={{ items: getTabRowMenuItems(search, store.remote, tabRowMenu) }}
           config={{
             isOpen: true,
             posOpen: tabRowMenu.posOpen,
@@ -474,6 +474,7 @@ export const SearchPanel = observer(function SearchPanel({
 // "before/after a target tab" pair takes any selection as the source tabs.
 function getTabRowMenuItems(
   search: PopupStore['tabSearch'],
+  remote: PopupStore['remote'],
   tabRowMenu: TabRowMenuState
 ) {
   const tabsSelected = search.visibleSelectedItems
@@ -515,11 +516,12 @@ function getTabRowMenuItems(
     {
       id: 'upload-selected-to-remote',
       label: `Upload selected tab(s) to remote (${tabsSelected.length})`,
-      isDisabled: tabsSelected.length === 0
+      isDisabled: tabsSelected.length === 0 || !remote.isUploadAllowed
     },
     {
       id: 'upload-window-to-remote',
-      label: 'Upload this window to remote'
+      label: 'Upload this window to remote',
+      isDisabled: !remote.isUploadAllowed
     }
   )
   return items

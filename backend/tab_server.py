@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import tab_server_db as db
+import tab_server_check as config_check
 import tab_server_index as index
 from tab_server_db import DbUnavailableError, DbConflictError
 from tab_server_index import IndexUnavailableError
@@ -237,13 +238,13 @@ async def api_login(request: Request):
 
 @app.get("/api/status")
 async def api_status():
-	is_db_ok, db_message = db.db_check()
-	index_status = index.index_check()
+	table_list, table_record = run_table_config_check("status")
+	index_status, index_record = run_index_config_check("status")
 	return ok({
-		"isDbOk": is_db_ok,
-		"isIndexOk": index_status["isOk"] and index_status["isExisting"],
-		"dbMessage": db_message,
-		"indexMessage": index_status["message"],
+		"isDbOk": table_record["isPassed"],
+		"isIndexOk": index_record["isPassed"],
+		"dbMessage": table_check_message(table_list),
+		"indexMessage": index_check_message(index_status),
 		"serverTimeMs": db.now_ms(),
 	})
 
@@ -1014,35 +1015,195 @@ async def api_search(request: Request):
 # maintenance apis
 # ---------------------------------------------------------------------------
 
-@app.post("/api/maintenance/awsCheck")
-async def api_aws_check(request: Request):
-	user_id = user_of_request(request)
-	table_list = db.aws_check()
+def is_table_list_ready(table_list):
+	return len(table_list) > 0 and all(item["isReady"] for item in table_list)
+
+
+def is_index_status_ready(index_status):
+	return (
+		index_status["isOk"]
+		and index_status["isExisting"]
+		and index_status["isConfigConsistent"] is True
+	)
+
+
+def table_check_message(table_list):
+	if is_table_list_ready(table_list):
+		return ""
+	table_missing_count = sum(not item["isExisting"] for item in table_list)
+	table_invalid_count = sum(
+		item["isExisting"] and item["isConfigConsistent"] is not True
+		for item in table_list)
+	if table_missing_count:
+		return f"{table_missing_count} DynamoDB table(s) missing"
+	if table_invalid_count:
+		return f"{table_invalid_count} DynamoDB table configuration(s) differ"
+	return "DynamoDB tables are not active"
+
+
+def index_check_message(index_status):
+	if not index_status["isOk"]:
+		return index_status["message"] or "search index is unreachable"
+	if not index_status["isExisting"]:
+		return "search index is missing"
+	if index_status["isConfigConsistent"] is not True:
+		return "search index configuration differs"
+	return ""
+
+
+def run_table_config_check(trigger):
+	try:
+		table_list = db.aws_check()
+	except Exception as error:
+		config_check.check_record(
+			config_check.CHECK_TYPE_TABLES,
+			False,
+			{"tableList": [], "message": str(error)},
+			trigger,
+		)
+		raise
+	record = config_check.check_record(
+		config_check.CHECK_TYPE_TABLES,
+		is_table_list_ready(table_list),
+		{"tableList": table_list},
+		trigger,
+	)
+	return table_list, record
+
+
+def run_index_config_check(trigger):
 	index_status = index.index_check()
+	record = config_check.check_record(
+		config_check.CHECK_TYPE_INDEX,
+		is_index_status_ready(index_status),
+		{"index": index_status},
+		trigger,
+	)
+	return index_status, record
+
+
+def maintenance_response(user_id, table_list, index_status):
 	journal_pending_count = None
 	is_meta_active = any(
-		item["tableName"] == db.table_name("Meta") and item["isExisting"]
+		item["tableName"] == db.table_name("Meta") and item["isReady"]
 		for item in table_list)
 	if is_meta_active:
 		journal_pending_count = len(db.journal_list(user_id))
-	return ok({
+	return {
 		"tableList": table_list,
 		"index": index_status,
 		"journalPendingCount": journal_pending_count,
-	})
+		"checkHistory": config_check.check_history(),
+	}
+
+
+def table_maintenance_response(user_id, table_list):
+	journal_pending_count = None
+	is_meta_active = any(
+		item["tableName"] == db.table_name("Meta") and item["isReady"]
+		for item in table_list)
+	if is_meta_active:
+		journal_pending_count = len(db.journal_list(user_id))
+	return {
+		"tableList": table_list,
+		"journalPendingCount": journal_pending_count,
+		"checkHistory": config_check.check_history(),
+	}
+
+
+def index_maintenance_response(index_status):
+	return {
+		"index": index_status,
+		"checkHistory": config_check.check_history(),
+	}
+
+
+@app.post("/api/maintenance/awsCheck")
+async def api_aws_check(request: Request):
+	user_id = user_of_request(request)
+	table_list, _ = run_table_config_check("manual")
+	index_status, _ = run_index_config_check("manual")
+	return ok(maintenance_response(user_id, table_list, index_status))
 
 
 @app.post("/api/maintenance/awsInit")
 async def api_aws_init(request: Request):
 	user_id = user_of_request(request)
-	table_list = db.aws_init()
+	db.aws_init()
 	index.index_ensure()
+	table_list, _ = run_table_config_check("initialize")
+	index_status, _ = run_index_config_check("initialize")
+	return ok(maintenance_response(user_id, table_list, index_status))
+
+
+@app.post("/api/maintenance/tableCheck")
+async def api_table_check(request: Request):
+	user_id = user_of_request(request)
+	table_list, _ = run_table_config_check("manual")
+	return ok(table_maintenance_response(user_id, table_list))
+
+
+@app.post("/api/maintenance/tableInit")
+async def api_table_init(request: Request):
+	user_id = user_of_request(request)
+	try:
+		db.aws_init()
+	except Exception:
+		try:
+			run_table_config_check("initialize")
+		except Exception:
+			pass
+		raise
+	table_list, _ = run_table_config_check("initialize")
+	return ok(table_maintenance_response(user_id, table_list))
+
+
+@app.post("/api/maintenance/indexCheck")
+async def api_index_check(request: Request):
+	user_of_request(request)
+	index_status, _ = run_index_config_check("manual")
+	return ok(index_maintenance_response(index_status))
+
+
+@app.post("/api/maintenance/indexInit")
+async def api_index_init(request: Request):
+	user_of_request(request)
+	try:
+		index.index_ensure()
+	except Exception:
+		run_index_config_check("initialize")
+		raise
+	index_status, _ = run_index_config_check("initialize")
+	return ok(index_maintenance_response(index_status))
+
+
+@app.post("/api/maintenance/indexRecreate")
+async def api_index_recreate(request: Request):
+	user_id = user_of_request(request)
+	body = await read_body(request)
 	index_status = index.index_check()
-	return ok({
-		"tableList": table_list,
-		"index": index_status,
-		"journalPendingCount": len(db.journal_list(user_id)),
-	})
+	document_count = index_status.get("documentCount")
+	if document_count is not None and document_count > 0 \
+			and body.get("isConfirmedNonEmpty") is not True:
+		return {
+			"code": -6,
+			"data": {"documentCount": document_count},
+			"message": "confirmation required before recreating a non-empty index",
+		}
+	try:
+		index.index_recreate()
+	except Exception:
+		run_index_config_check("recreate")
+		raise
+	index_status, _ = run_index_config_check("recreate")
+	return ok(index_maintenance_response(index_status))
+
+
+@app.post("/api/maintenance/configCheckHistory")
+async def api_config_check_history(request: Request):
+	user_of_request(request)
+	body = await read_body(request)
+	return ok(config_check.check_history(body.get("limit") or 20))
 
 
 @app.post("/api/maintenance/indexRepair")

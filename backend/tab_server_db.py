@@ -592,24 +592,96 @@ _TABLE_SPECS = {
 
 def aws_check():
 	table_status_list = []
-	for short_name in _TABLE_SPECS:
+	for short_name, spec in _TABLE_SPECS.items():
 		full_name = table_name(short_name)
 		try:
 			response = _client.describe_table(TableName=full_name)
+			table_description = response["Table"]
+			config_issue_list = _table_config_issue_list(table_description, spec)
+			status_text = table_description["TableStatus"]
 			table_status_list.append({
 				"tableName": full_name,
 				"isExisting": True,
-				"statusText": response["Table"]["TableStatus"],
+				"isConfigConsistent": len(config_issue_list) == 0,
+				"isReady": status_text == "ACTIVE" and len(config_issue_list) == 0,
+				"statusText": status_text,
+				"configIssueList": config_issue_list,
 			})
 		except ClientError as error:
 			if error.response["Error"]["Code"] == "ResourceNotFoundException":
 				table_status_list.append({
-					"tableName": full_name, "isExisting": False, "statusText": "MISSING"})
+					"tableName": full_name,
+					"isExisting": False,
+					"isConfigConsistent": None,
+					"isReady": False,
+					"statusText": "MISSING",
+					"configIssueList": [],
+				})
 			else:
 				raise _wrap_db_error(error)
 		except Exception as error:
 			raise _wrap_db_error(error)
 	return table_status_list
+
+
+def _table_config_issue_list(table_description, spec):
+	issue_list = []
+	key_schema_actual = _key_schema_normalized(table_description.get("KeySchema", []))
+	key_schema_expected = _key_schema_normalized([
+		{"AttributeName": name, "KeyType": key_type}
+		for name, _, key_type in spec["keys"]
+	])
+	if key_schema_actual != key_schema_expected:
+		issue_list.append("key schema differs from the configured schema")
+
+	attribute_actual = {
+		(item["AttributeName"], item["AttributeType"])
+		for item in table_description.get("AttributeDefinitions", [])
+	}
+	attribute_expected = {
+		(name, attr_type)
+		for name, attr_type, _ in spec["keys"]
+	}
+	for gsi in spec["gsis"]:
+		for name, attr_type, _ in gsi["keys"]:
+			attribute_expected.add((name, attr_type))
+	if attribute_actual != attribute_expected:
+		issue_list.append("key attribute definitions differ from the configured schema")
+
+	gsi_actual_by_name = {
+		item["IndexName"]: item
+		for item in table_description.get("GlobalSecondaryIndexes", [])
+	}
+	gsi_expected_names = {item["name"] for item in spec["gsis"]}
+	if set(gsi_actual_by_name) != gsi_expected_names:
+		issue_list.append("global secondary index names differ from the configured schema")
+	for gsi_expected in spec["gsis"]:
+		gsi_actual = gsi_actual_by_name.get(gsi_expected["name"])
+		if gsi_actual is None:
+			continue
+		key_actual = _key_schema_normalized(gsi_actual.get("KeySchema", []))
+		key_expected = _key_schema_normalized([
+			{"AttributeName": name, "KeyType": key_type}
+			for name, _, key_type in gsi_expected["keys"]
+		])
+		if key_actual != key_expected:
+			issue_list.append(
+				f"index {gsi_expected['name']} key schema differs from the configured schema")
+		if gsi_actual.get("Projection", {}).get("ProjectionType") != "ALL":
+			issue_list.append(
+				f"index {gsi_expected['name']} projection must be ALL")
+
+	billing_mode = table_description.get(
+		"BillingModeSummary", {}).get("BillingMode", "PROVISIONED")
+	if billing_mode != "PAY_PER_REQUEST":
+		issue_list.append("billing mode must be PAY_PER_REQUEST")
+	return issue_list
+
+
+def _key_schema_normalized(key_schema):
+	return sorted(
+		(item.get("AttributeName"), item.get("KeyType"))
+		for item in key_schema)
 
 
 def aws_init():

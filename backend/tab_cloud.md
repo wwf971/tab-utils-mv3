@@ -231,6 +231,45 @@ search(user_id, query_tree, field_list, is_trashed, limit)
 
 Core logic never sees an elasticsearch query body or response; another engine only needs to implement these calls.
 
+### Basic Operations Related to Index
+
+User should be able to know/do the following things related to index:
+
+<!-- below part should not be modified-->
+1. does the index exists?
+2. if so, is its config consistent with how it is designed in doc and assumed  in code?
+2.1 recreation/re-initialization the index, which will ask for confirm before doing so, if the index is not empty.
+3. if not, init/create the index.
+<!-- above part should not be modified-->
+
+The index check reports reachability, existence, document count, and whether
+the configured settings and mappings required by the search code are present.
+The config comparison checks the required analyzer, tokenizer, shard count,
+field types, analyzers, and term vectors. Extra Elasticsearch-managed settings
+do not make the check fail.
+
+Index operations are separate:
+
+```text
+check
+  -> read existence, config, and document count
+
+initialize missing index
+  -> create only when missing
+  -> never replaces an existing index
+
+recreate index
+  -> read document count
+  -> non-empty: require an explicit second confirmed request
+  -> delete and create with the configured schema
+```
+
+Recreation deletes indexed documents, not DynamoDB tab items. The current
+account can use index rebuild afterward to copy its DynamoDB tabs into the new
+index. Confirmation is an in-page frontend state; browser confirmation dialogs
+are not used. The backend also requires the confirmation field, so another
+client cannot accidentally skip this protection.
+
 ### Index and document format
 
 One document per tab, document id = tab id, so put and delete never need a search.
@@ -322,7 +361,12 @@ A typical workflow for creating tabs (single create is the batch of one):
 
 ```text
 tabCreate(windowId | windowTitleNew, tabList, position)
-  -> resolve the target window (given, or default window, or create one)
+  -> resolve the target window:
+       given windowId            -> that live window
+       windowTitleNew            -> create a window with that title
+       neither, default exists   -> the stored default window
+       neither, no live default  -> create a window titled `default`,
+                                    store it as windowDefaultId
   -> read the two neighbor tabs of the position
   -> calc one tabLexoRank per tab between the neighbor ranks
   -> if the position is strictly inside a group's range, take that groupId
@@ -374,12 +418,42 @@ The elasticsearch config block follows the named-endpoint style shared with othe
 
 ## AWS Integrity and Initialization
 
-The backend does not create tables implicitly. Two maintenance apis cover setup and health:
+The backend does not create tables or an index implicitly. DynamoDB and search
+index operations are separate so an action never has an ambiguous target.
 
-- `awsCheck` reports, without changing anything: each table's existence and status, the index's existence, and the current user's pending journal count.
-- `awsInit` creates the missing tables (with their GSIs, on-demand billing) and the missing index, then reports the same status.
+- Table check reports existence, ACTIVE status, key schema, GSI schema,
+  projection, and billing mode for every table.
+- Table initialize creates missing tables and leaves existing tables unchanged.
+- Index check reports existence, required config consistency, and document count.
+- Index initialize creates only a missing index.
+- Index recreate replaces an index, with non-empty confirmation as described above.
 
-The extension's settings popup has an area showing this status with an Initialize button. All apis answer `-5` with a short message when DynamoDB or the index is unreachable, instead of hanging or crashing; the extension treats `-5` and network errors as "backend/cloud unavailable" and keeps its local features fully usable.
+Every config check is added to a bounded backend cache. A record contains
+`checkId`, `checkType`, `checkAtMs`, `isPassed`, `trigger`, and the typed check
+result. The cache keeps the newest 50 records in backend-process memory. A
+history query returns a shorter newest-first list, the latest record of each
+type, and the derived upload readiness.
+
+```text
+latest DynamoDB table check passed
+  + latest search index check passed
+    -> upload allowed
+
+missing or failed latest required check
+    -> upload blocked
+    -> user runs the relevant check
+    -> passing result removes the block
+```
+
+The popup fetches cached checks after loading a saved login and after login.
+Upload entry points, including right-click menu items and the final Apply
+action, use the same readiness state. The cloud settings panel has separate
+DynamoDB Tables, Search Index, and Check History tabs.
+
+The older combined `awsCheck` and `awsInit` apis remain compatible, but the
+popup uses the separate operations. All apis answer `-5` with a short message
+when DynamoDB or the index is unreachable, instead of hanging or crashing; the
+extension keeps its local features usable.
 
 ## Backend Code Boundaries
 
@@ -431,9 +505,11 @@ upload panel
 
 The upload is one batch api call in one backend transaction. Local tabs are closed only after the backend confirms success, and only when the checkbox is on.
 
+If the target is left as the default remote window, and no live default window exists yet (first upload, or the stored default is unset / trashed / gone), the backend creates a window titled `default`, stores it as `windowDefaultId`, and uploads the tabs into it. The created window is committed in the same transaction as the tabs.
+
 ### Remote window selector
 
-A reusable selector component (conforming to `selector.md`): a search-bar-like area showing the selected window as a tag with a cross icon, and an edit icon opening a dropdown with a search field, a Fetch All button, and the window list. It searches the store's cached windows first and asks the server at a bounded frequency; results are cached in the store keyed by id, and each selector instance keeps its own ui state in the store keyed by a selector id, cleared on unmount. It is used by the upload panel and by trash restore.
+A reusable selector component (conforming to `selector.md`): a search-bar-like area showing the selected window as a tag with a cross icon, and an edit icon opening a dropdown with a search field, a Fetch All button, and the window list. Clicking outside the selector closes the dropdown. It searches the store's cached windows first and asks the server at a bounded frequency; results are cached in the store keyed by id, and each selector instance keeps its own ui state in the store keyed by a selector id, cleared on unmount. It is used by the upload panel and by trash restore.
 
 ### Toward one unified search bar
 
@@ -444,7 +520,12 @@ Remote search results reuse the shape of local search results: items plus match 
 There should be a settings icon at top right, clicking which will open a popup panel for backend endpoint and login.
 Cloud service(aws etc) status should also be reflected in this area.
 
-The popup panel is built from the config-panel component series (`ConfigPanel` etc.): an endpoint/login group (endpoint url, username, password, login/logout), and an aws status group showing the `awsCheck` result per table/index with an Initialize button running `awsInit`. The endpoint url, username, and token are stored in `storage.local`.
+The popup panel is built from the config-panel component series (`ConfigPanel`
+etc.): an endpoint/login group (endpoint url, username, password,
+login/logout), and a cloud status group. The cloud group uses top tabs for
+DynamoDB Tables, Search Index, and Check History. Each resource tab owns its
+check and initialization actions. The endpoint url, username, and token are
+stored in `storage.local`.
 
 When the backend or aws is unreachable (frequent during early development), every remote feature shows its error inline and stays retryable; nothing blocks the rest of the popup.
 

@@ -65,9 +65,41 @@ export interface RemoteUploadPanelState {
 }
 
 export interface RemoteAwsCheckData {
-  tableList: Array<{ tableName: string, isExisting: boolean, statusText: string }>
-  index: { isOk: boolean, isExisting: boolean, indexName: string, message: string }
-  journalPendingCount: number | null
+  tableList?: Array<{
+    tableName: string
+    isExisting: boolean
+    isConfigConsistent: boolean | null
+    isReady: boolean
+    statusText: string
+    configIssueList: string[]
+  }>
+  index?: {
+    isOk: boolean
+    isExisting: boolean
+    isConfigConsistent: boolean | null
+    indexName: string
+    documentCount: number | null
+    configIssueList: string[]
+    message: string
+  }
+  journalPendingCount?: number | null
+  checkHistory?: RemoteConfigCheckHistory
+}
+
+export interface RemoteConfigCheckRecord {
+  checkId: string
+  checkType: 'dynamodbTables' | 'searchIndex'
+  checkAtMs: number
+  isPassed: boolean
+  trigger: string
+  result: Record<string, unknown>
+}
+
+export interface RemoteConfigCheckHistory {
+  checkList: RemoteConfigCheckRecord[]
+  latestByType: Partial<Record<RemoteConfigCheckRecord['checkType'], RemoteConfigCheckRecord>>
+  isUploadAllowed: boolean
+  uploadBlockReason: string
 }
 
 const uploadBatchMax = 40
@@ -87,6 +119,10 @@ export class RemoteStore {
   settingsMessageText = ''
   statusData: { isDbOk: boolean, isIndexOk: boolean, dbMessage?: string, indexMessage?: string } | null = null
   awsCheckData: RemoteAwsCheckData | null = null
+  configCheckHistory: RemoteConfigCheckHistory | null = null
+  settingsCloudTabId = 'tables'
+  isIndexRecreateConfirmOpen = false
+  indexRecreateDocumentCount: number | null = null
 
   // remote window cache, keyed by id, order kept in windowIds
   windowById = new Map<string, RemoteWindowItem>()
@@ -143,6 +179,15 @@ export class RemoteStore {
     return this.searchAction !== null || this.context?.action != null
   }
 
+  get isUploadAllowed() {
+    return this.isLoggedIn && this.configCheckHistory?.isUploadAllowed === true
+  }
+
+  get uploadBlockReason() {
+    if (!this.isLoggedIn) return 'Log in to Tab Cloud before uploading'
+    return this.configCheckHistory?.uploadBlockReason || 'Cloud configuration has not been checked'
+  }
+
   get isContextMode() {
     return this.context !== null
   }
@@ -172,6 +217,9 @@ export class RemoteStore {
       this.token = String(stored.remote_token ?? '')
       this.settingsUsername = this.userId
     })
+    if (this.token && this.endpointUrl) {
+      await this.configCheckHistoryFetch()
+    }
   }
 
   dispose() {
@@ -222,7 +270,14 @@ export class RemoteStore {
   }
 
   async updateEndpointUrl(endpointUrl: string) {
-    this.endpointUrl = endpointUrl.trim()
+    const endpointUrlNext = endpointUrl.trim()
+    if (endpointUrlNext !== this.endpointUrl) {
+      this.statusData = null
+      this.awsCheckData = null
+      this.configCheckHistory = null
+      this.cancelIndexRecreate()
+    }
+    this.endpointUrl = endpointUrlNext
     await chrome.storage.local.set({ remote_endpoint_url: this.endpointUrl })
   }
 
@@ -257,6 +312,7 @@ export class RemoteStore {
         remote_user_id: this.userId
       })
       this.setSettingsMessage('success', `Logged in as ${this.userId}`)
+      void this.configCheckHistoryFetch()
       return true
     })
   }
@@ -264,6 +320,7 @@ export class RemoteStore {
   async logout() {
     this.token = ''
     this.awsCheckData = null
+    this.configCheckHistory = null
     await chrome.storage.local.set({ remote_token: '' })
     this.setSettingsMessage('idle', 'Logged out')
   }
@@ -293,6 +350,38 @@ export class RemoteStore {
       }
       this.setSettingsMessage('success', 'Backend, DynamoDB, and index are ready')
     })
+    if (this.isLoggedIn && result.code !== remoteCodeNetwork) {
+      void this.configCheckHistoryFetch()
+    }
+  }
+
+  setSettingsCloudTabId(tabId: string) {
+    this.settingsCloudTabId = tabId
+  }
+
+  applyMaintenanceData(data: RemoteAwsCheckData) {
+    this.awsCheckData = {
+      ...(this.awsCheckData ?? {}),
+      ...data
+    }
+    if (data.checkHistory) {
+      this.configCheckHistory = data.checkHistory
+    }
+  }
+
+  async configCheckHistoryFetch() {
+    if (!this.isLoggedIn) return false
+    const result = await this.call<RemoteConfigCheckHistory>(
+      '/api/maintenance/configCheckHistory',
+      { limit: 20 }
+    )
+    return runInAction(() => {
+      if (result.code !== 0 || !result.data) {
+        return false
+      }
+      this.configCheckHistory = result.data
+      return true
+    })
   }
 
   async awsCheck() {
@@ -307,7 +396,7 @@ export class RemoteStore {
         this.setSettingsMessage('error', result.message ?? 'Check failed')
         return
       }
-      this.awsCheckData = result.data
+      this.applyMaintenanceData(result.data)
       this.setSettingsMessage('success', 'Check finished')
     })
   }
@@ -324,9 +413,125 @@ export class RemoteStore {
         this.setSettingsMessage('error', result.message ?? 'Initialization failed')
         return
       }
-      this.awsCheckData = result.data
+      this.applyMaintenanceData(result.data)
       this.setSettingsMessage('success', 'Tables and index are ready')
     })
+  }
+
+  async tableCheck() {
+    return this.runSettingsMaintenance(
+      'tableCheck',
+      'Checking DynamoDB tables...',
+      '/api/maintenance/tableCheck',
+      'DynamoDB table check finished'
+    )
+  }
+
+  async tableInit() {
+    return this.runSettingsMaintenance(
+      'tableInit',
+      'Initializing missing DynamoDB tables...',
+      '/api/maintenance/tableInit',
+      'DynamoDB table initialization finished'
+    )
+  }
+
+  async indexCheck() {
+    return this.runSettingsMaintenance(
+      'indexCheck',
+      'Checking search index...',
+      '/api/maintenance/indexCheck',
+      'Search index check finished'
+    )
+  }
+
+  async indexInit() {
+    return this.runSettingsMaintenance(
+      'indexInit',
+      'Initializing search index...',
+      '/api/maintenance/indexInit',
+      'Search index initialization finished'
+    )
+  }
+
+  requestIndexRecreate() {
+    const documentCount = this.awsCheckData?.index?.documentCount
+    if (documentCount !== null && documentCount !== undefined && documentCount > 0) {
+      this.indexRecreateDocumentCount = documentCount
+      this.isIndexRecreateConfirmOpen = true
+      return
+    }
+    void this.indexRecreate(false)
+  }
+
+  cancelIndexRecreate() {
+    this.isIndexRecreateConfirmOpen = false
+    this.indexRecreateDocumentCount = null
+  }
+
+  async indexRecreate(isConfirmedNonEmpty: boolean) {
+    if (this.settingsAction) return false
+    this.settingsAction = 'indexRecreate'
+    this.setSettingsMessage('loading', 'Recreating search index...')
+    const result = await this.call<RemoteAwsCheckData>(
+      '/api/maintenance/indexRecreate',
+      { isConfirmedNonEmpty }
+    )
+    const isOk = runInAction(() => {
+      this.settingsAction = null
+      if (result.code === -6) {
+        const data = result.data as unknown as { documentCount?: number } | undefined
+        this.indexRecreateDocumentCount = data?.documentCount ?? null
+        this.isIndexRecreateConfirmOpen = true
+        this.setSettingsMessage('error', result.message ?? 'Confirmation is required')
+        return false
+      }
+      if (result.code !== 0 || !result.data) {
+        this.setSettingsMessage('error', result.message ?? 'Search index recreation failed')
+        return false
+      }
+      this.applyMaintenanceData(result.data)
+      this.cancelIndexRecreate()
+      this.setSettingsMessage('success', 'Search index recreated')
+      return true
+    })
+    if (!isOk && result.code !== -6 && result.code !== remoteCodeNetwork) {
+      void this.configCheckHistoryFetch()
+    }
+    return isOk
+  }
+
+  async runSettingsMaintenance(
+    actionName: string,
+    loadingText: string,
+    path: string,
+    successText: string
+  ) {
+    if (this.settingsAction) return false
+    this.settingsAction = actionName
+    this.setSettingsMessage('loading', loadingText)
+    const result = await this.call<RemoteAwsCheckData>(path)
+    const isOk = runInAction(() => {
+      this.settingsAction = null
+      if (result.code !== 0 || !result.data) {
+        if (actionName.startsWith('table') && this.awsCheckData) {
+          this.awsCheckData.tableList = undefined
+          this.awsCheckData.journalPendingCount = undefined
+        }
+        if (actionName.startsWith('index') && this.awsCheckData) {
+          this.awsCheckData.index = undefined
+        }
+        this.setSettingsMessage('error', result.message ?? `${actionName} failed`)
+        return false
+      }
+      this.applyMaintenanceData(result.data)
+      this.setSettingsMessage('success', successText)
+      return true
+    })
+    if (!isOk && result.code !== remoteCodeNetwork) {
+      void this.configCheckHistoryFetch()
+    }
+    return isOk
   }
 
   async indexRepair() {
@@ -341,6 +546,25 @@ export class RemoteStore {
         return
       }
       this.setSettingsMessage('success', `Repaired ${result.data?.repairCount ?? 0} pending journal(s)`)
+    })
+  }
+
+  async indexRebuild() {
+    if (this.settingsAction) return
+    this.settingsAction = 'indexRebuild'
+    this.setSettingsMessage('loading', 'Rebuilding current account search documents...')
+    const result = await this.call<{ docCount: number }>('/api/maintenance/indexRebuild')
+    runInAction(() => {
+      this.settingsAction = null
+      if (result.code !== 0) {
+        this.setSettingsMessage('error', result.message ?? 'Index rebuild failed')
+        return
+      }
+      this.setSettingsMessage(
+        'success',
+        `Rebuilt ${result.data?.docCount ?? 0} search document(s)`
+      )
+      void this.indexCheck()
     })
   }
 
@@ -794,6 +1018,10 @@ export class RemoteStore {
   // -------------------------------------------------------------------------
 
   openUploadPanel(tabList: RemoteUploadTab[], sourceText: string) {
+    if (!this.isUploadAllowed) {
+      this.setMessage('error', this.uploadBlockReason)
+      return false
+    }
     this.uploadPanel = {
       tabList,
       sourceText,
@@ -802,9 +1030,14 @@ export class RemoteStore {
       windowIdSelected: null
     }
     this.uploadPanelOpenCount += 1
+    return true
   }
 
   async openUploadPanelForWindow(windowSourceId: number) {
+    if (!this.isUploadAllowed) {
+      this.setMessage('error', this.uploadBlockReason)
+      return false
+    }
     const tabs = await chrome.tabs.query({ windowId: windowSourceId })
     const tabList = tabs
       .filter((tab) => Number.isInteger(tab.id))
@@ -816,6 +1049,7 @@ export class RemoteStore {
     runInAction(() => {
       this.openUploadPanel(tabList, 'this window')
     })
+    return true
   }
 
   closeUploadPanel() {
@@ -837,6 +1071,9 @@ export class RemoteStore {
     }
     if (!this.isLoggedIn) {
       return { isOk: false, messageText: 'Not logged in. Open the Remote tab settings to log in' }
+    }
+    if (!this.isUploadAllowed) {
+      return { isOk: false, messageText: this.uploadBlockReason }
     }
     panel.isApplying = true
     try {

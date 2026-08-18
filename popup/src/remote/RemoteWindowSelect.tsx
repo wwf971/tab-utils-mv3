@@ -24,12 +24,29 @@ export const RemoteWindowSelect = observer(function RemoteWindowSelect({
   isDisabled?: boolean
   onEvent: (eventType: string, eventData: Record<string, unknown>) => void
 }) {
+  const rootRef = useRef<HTMLDivElement>(null)
   const tagTrackRef = useRef<HTMLDivElement>(null)
   const state = store.selectorState(selectorId)
 
   useEffect(() => {
     return () => store.selectorClear(selectorId)
   }, [store, selectorId])
+
+  useEffect(() => {
+    if (!state.isOpen) return undefined
+    const closeOnOutside = (event: Event) => {
+      const target = event.target
+      if (!(target instanceof Node)) return
+      if (rootRef.current?.contains(target)) return
+      store.selectorSetOpen(selectorId, false)
+    }
+    document.addEventListener('pointerdown', closeOnOutside, true)
+    document.addEventListener('contextmenu', closeOnOutside, true)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutside, true)
+      document.removeEventListener('contextmenu', closeOnOutside, true)
+    }
+  }, [state.isOpen, store, selectorId])
 
   // hidden overflowing tags are reached by wheel-scrolling the tag track
   useEffect(() => {
@@ -48,7 +65,7 @@ export const RemoteWindowSelect = observer(function RemoteWindowSelect({
   const windowIdsVisible = store.selectorWindowIdsVisible(selectorId)
 
   return (
-    <div className="remote-window-select">
+    <div className="remote-window-select" ref={rootRef}>
       <div className="remote-window-select-bar">
         <div className="remote-window-select-tags" ref={tagTrackRef}>
           {windowSelected ? (

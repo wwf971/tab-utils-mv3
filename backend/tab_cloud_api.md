@@ -44,6 +44,7 @@ Error codes:
 -3  target not found
 -4  invalid request (also: batch too large, group not continuous)
 -5  cloud service (dynamodb / index) unreachable
+-6  explicit confirmation required before a destructive operation
 ```
 
 ## Auth and Status
@@ -276,6 +277,65 @@ Matching is case-insensitive pure substring matching. `indexStart`/`indexEnd` ar
 
 ## Maintenance
 
+Config checks are cached in backend-process memory. Each check record has:
+
+```jsonc
+{
+  "checkId": "1787079600000-4",
+  "checkType": "dynamodbTables", // dynamodbTables | searchIndex
+  "checkAtMs": 1787079600000,
+  "isPassed": true,
+  "trigger": "manual",           // status | manual | initialize | recreate
+  "result": {}
+}
+```
+
+The cache keeps the newest 50 records. History responses include the requested
+newest records, `latestByType`, `isUploadAllowed`, and `uploadBlockReason`.
+
+### POST /api/maintenance/tableCheck
+
+request `{}` — checks existence, ACTIVE status, key schema, GSIs, projections,
+and on-demand billing. Returns `{tableList, journalPendingCount, checkHistory}`.
+
+### POST /api/maintenance/tableInit
+
+request `{}` — creates missing tables, leaves existing tables unchanged, then
+runs and caches a table check.
+
+### POST /api/maintenance/indexCheck
+
+request `{}` — checks Elasticsearch reachability, index existence, required
+settings/mapping consistency, and document count. Returns `{index,
+checkHistory}`.
+
+### POST /api/maintenance/indexInit
+
+request `{}` — creates the configured index only when it is missing, then runs
+and caches an index check.
+
+### POST /api/maintenance/indexRecreate
+
+request `{isConfirmedNonEmpty}` — deletes and recreates the configured index.
+When the index has documents and confirmation is false or absent, no change is
+made and the response is:
+
+```jsonc
+{
+  "code": -6,
+  "data": {"documentCount": 23},
+  "message": "confirmation required before recreating a non-empty index"
+}
+```
+
+A confirmed request recreates the index and returns `{index, checkHistory}`.
+DynamoDB items are not deleted.
+
+### POST /api/maintenance/configCheckHistory
+
+request `{limit?}` — returns cached config checks, newest first. `limit`
+defaults to 20 and is capped at 50.
+
 ### POST /api/maintenance/awsCheck
 
 request `{}` — reports without changing anything.
@@ -286,14 +346,24 @@ request `{}` — reports without changing anything.
   "tableList": [
     {"tableName": "tabCloudTab", "isExisting": true, "statusText": "ACTIVE"}
   ],
-  "index": {"isExisting": true, "indexName": "tab_cloud_tab"},
-  "journalPendingCount": 0
+  "index": {
+    "isOk": true,
+    "isExisting": true,
+    "isConfigConsistent": true,
+    "indexName": "tab_cloud_tab",
+    "documentCount": 23,
+    "configIssueList": []
+  },
+  "journalPendingCount": 0,
+  "checkHistory": {}
 }
 ```
 
 ### POST /api/maintenance/awsInit
 
-request `{}` — creates missing tables (with GSIs, on-demand billing) and the missing index, waits until active, then returns the same data as awsCheck.
+request `{}` — compatibility operation that creates missing tables and the
+missing index, waits until active, caches both checks, then returns the same
+data as awsCheck. New clients should use the separate table and index apis.
 
 ### POST /api/maintenance/indexRepair
 

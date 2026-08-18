@@ -224,22 +224,25 @@ Replace `REGION`, `ACCOUNT_ID`, and the `TabCloud` prefix. After initialization,
 
 ### 3. Make Elasticsearch reachable
 
-`awsInit` initializes both DynamoDB and the configured Elasticsearch index. The Elasticsearch endpoint selected by `elasticsearch.endpoint_use` must be reachable from the backend.
+Table and index initialization are separate in Remote settings. The
+Elasticsearch endpoint selected by `elasticsearch.endpoint_use` must be
+reachable from the backend before initializing the index.
 
 Elasticsearch is not stored in these DynamoDB tables. It is a rebuildable search index; DynamoDB remains the source of truth.
 
-### 4. Run Initialize
+### 4. Run initialization
 
 1. Start the backend with its real `config.0.yaml`.
 2. Open the extension popup.
 3. Open Remote settings and set the backend endpoint.
 4. Log in.
-5. Select **Check Tables** to see the initial state.
-6. Select **Initialize**.
-7. Wait until initialization finishes.
-8. Select **Check Tables** again.
+5. Open **DynamoDB Tables** and select **Check Tables**.
+6. Select **Initialize Missing Tables** when needed.
+7. Open **Search Index** and select **Check Index**.
+8. Select **Initialize Missing Index** when needed.
 
-The operation is safe to retry. It skips tables and the Elasticsearch index that already exist.
+Both initialization operations are safe to retry. They skip resources that
+already exist.
 
 Expected result:
 
@@ -256,7 +259,8 @@ pending index journals: 0
 
 The actual table prefix and Elasticsearch index name can differ according to config.
 
-If Initialize reports an Elasticsearch error after creating the tables, fix Elasticsearch connectivity and retry. Existing DynamoDB tables are kept and skipped.
+An Elasticsearch error does not change existing DynamoDB tables. Fix
+Elasticsearch connectivity and retry the index operation.
 
 ## Manual AWS Console creation
 
@@ -277,11 +281,13 @@ For each table:
 
 Repeat until all six tables exist. Then use **Check Tables** in Remote settings.
 
-Manual creation does not create the Elasticsearch index. After the six tables are active, the backend **Initialize** action can still create the missing index. It will skip the existing tables, so `dynamodb:CreateTable` is not needed when every table already exists.
+Manual creation does not create the Elasticsearch index. After the six tables
+are active, use **Initialize Missing Index** in the Search Index tab.
 
 ## Verification and incorrect schemas
 
-**Check Tables** currently checks only that each table exists and reports its table status. It does not validate table keys, GSI keys, or projection mode.
+**Check Tables** validates existence, ACTIVE status, table keys, GSI names and
+keys, GSI projection mode, key attribute types, and on-demand billing.
 
 `awsInit` also skips an existing table. It does not repair an existing table with a wrong schema.
 

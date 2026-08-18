@@ -321,10 +321,18 @@ export class PopupStore {
       this.tabSearch.setMessage('error', 'Select at least one tab to upload')
       return
     }
+    if (!this.remote.isUploadAllowed) {
+      this.tabSearch.setMessage('error', this.remote.uploadBlockReason)
+      return
+    }
     this.remote.openUploadPanel(tabs, 'selected tabs')
   }
 
   async openRemoteUploadForWindow(windowSourceId: number) {
+    if (!this.remote.isUploadAllowed) {
+      this.tabSearch.setMessage('error', this.remote.uploadBlockReason)
+      return
+    }
     await this.remote.openUploadPanelForWindow(windowSourceId)
   }
 

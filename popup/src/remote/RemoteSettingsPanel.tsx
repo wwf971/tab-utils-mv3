@@ -1,6 +1,11 @@
 import { useState } from 'react'
 import { observer } from 'mobx-react-lite'
-import { ConfigPanel, type ConfigCustomControlProps } from '@wwf971/react-comp-misc'
+import {
+  ConfigPanel,
+  TabsOnTop,
+  TabsOnTopTab,
+  type ConfigCustomControlProps
+} from '@wwf971/react-comp-misc'
 import { RemoteStore } from './RemoteStore'
 
 // Settings popup of the Remote tab: backend endpoint, login, and the aws-side
@@ -47,7 +52,7 @@ export const RemoteSettingsPanel = observer(function RemoteSettingsPanel({
         children: [
           {
             id: 'awsStatus',
-            label: 'AWS side integrity',
+            label: 'Cloud resources',
             type: 'custom',
             compName: 'awsStatus',
             isFullWidth: true,
@@ -201,7 +206,6 @@ const RemoteAwsStatusControl = observer(function RemoteAwsStatusControl({
   if (!store) return null
   const isBusy = store.settingsAction !== null
   const status = store.statusData
-  const check = store.awsCheckData
   return (
     <div className="remote-aws-status">
       <div className="remote-aws-status-row">
@@ -239,11 +243,46 @@ const RemoteAwsStatusControl = observer(function RemoteAwsStatusControl({
         >
           Refresh Status
         </button>
+      </div>
+      <div className={`remote-upload-readiness ${
+        store.isUploadAllowed ? 'remote-aws-ok' : 'remote-aws-bad'
+      }`}>
+        Upload: {store.isUploadAllowed ? 'allowed' : `blocked — ${store.uploadBlockReason}`}
+      </div>
+      <TabsOnTop
+        defaultTab={store.settingsCloudTabId}
+        defaultKeepMounted={false}
+        onTabChange={store.setSettingsCloudTabId}
+      >
+        <TabsOnTopTab tabKey="tables" label="DynamoDB Tables">
+          <RemoteTableStatus store={store} />
+        </TabsOnTopTab>
+        <TabsOnTopTab tabKey="index" label="Search Index">
+          <RemoteIndexStatus store={store} />
+        </TabsOnTopTab>
+        <TabsOnTopTab tabKey="history" label="Check History">
+          <RemoteCheckHistory store={store} />
+        </TabsOnTopTab>
+      </TabsOnTop>
+    </div>
+  )
+})
+
+const RemoteTableStatus = observer(function RemoteTableStatus({
+  store
+}: {
+  store: RemoteStore
+}) {
+  const isBusy = store.settingsAction !== null
+  const tableList = store.awsCheckData?.tableList ?? []
+  return (
+    <div className="remote-cloud-tab-panel">
+      <div className="remote-login-buttons">
         <button
           type="button"
           className="tab-search-control-button"
           disabled={isBusy || !store.isLoggedIn}
-          onClick={() => void store.awsCheck()}
+          onClick={() => void store.tableCheck()}
         >
           Check Tables
         </button>
@@ -251,43 +290,187 @@ const RemoteAwsStatusControl = observer(function RemoteAwsStatusControl({
           type="button"
           className="tab-search-control-button"
           disabled={isBusy || !store.isLoggedIn}
-          onClick={() => void store.awsInit()}
+          onClick={() => void store.tableInit()}
         >
-          Initialize
+          Initialize Missing Tables
+        </button>
+      </div>
+      {tableList.length > 0 ? (
+        <div className="remote-aws-table">
+          {tableList.map((tableItem) => (
+            <div className="remote-cloud-resource" key={tableItem.tableName}>
+              <div className="remote-aws-table-row">
+                <span className="remote-aws-table-name">{tableItem.tableName}</span>
+                <span className={tableItem.isReady ? 'remote-aws-ok' : 'remote-aws-bad'}>
+                  {tableItem.statusText}
+                  {tableItem.isExisting && !tableItem.isConfigConsistent ? ' / CONFIG DIFFERS' : ''}
+                </span>
+              </div>
+              {tableItem.configIssueList.map((issue) => (
+                <div className="remote-config-issue" key={issue}>{issue}</div>
+              ))}
+            </div>
+          ))}
+          <div className="remote-aws-table-row">
+            <span>Pending index journals</span>
+            <span>{store.awsCheckData?.journalPendingCount ?? '-'}</span>
+          </div>
+        </div>
+      ) : (
+        <div className="remote-cloud-empty">Run Check Tables to load table information.</div>
+      )}
+    </div>
+  )
+})
+
+const RemoteIndexStatus = observer(function RemoteIndexStatus({
+  store
+}: {
+  store: RemoteStore
+}) {
+  const isBusy = store.settingsAction !== null
+  const index = store.awsCheckData?.index
+  return (
+    <div className="remote-cloud-tab-panel">
+      <div className="remote-login-buttons">
+        <button
+          type="button"
+          className="tab-search-control-button"
+          disabled={isBusy || !store.isLoggedIn}
+          onClick={() => void store.indexCheck()}
+        >
+          Check Index
+        </button>
+        <button
+          type="button"
+          className="tab-search-control-button"
+          disabled={isBusy || !store.isLoggedIn || index?.isExisting === true}
+          onClick={() => void store.indexInit()}
+        >
+          Initialize Missing Index
         </button>
         <button
           type="button"
           className="tab-search-control-button"
           disabled={isBusy || !store.isLoggedIn}
+          onClick={() => store.requestIndexRecreate()}
+        >
+          Recreate Index
+        </button>
+        <button
+          type="button"
+          className="tab-search-control-button"
+          disabled={isBusy || !store.isLoggedIn || index?.isExisting !== true}
           onClick={() => void store.indexRepair()}
         >
-          Repair Search Index
+          Repair Pending Writes
+        </button>
+        <button
+          type="button"
+          className="tab-search-control-button"
+          disabled={isBusy || !store.isLoggedIn || index?.isExisting !== true}
+          onClick={() => void store.indexRebuild()}
+        >
+          Rebuild My Documents
         </button>
       </div>
-      {check ? (
-        <div className="remote-aws-table">
-          {check.tableList.map((tableItem) => (
-            <div className="remote-aws-table-row" key={tableItem.tableName}>
-              <span className="remote-aws-table-name">{tableItem.tableName}</span>
-              <span className={tableItem.isExisting ? 'remote-aws-ok' : 'remote-aws-bad'}>
-                {tableItem.statusText}
-              </span>
-            </div>
-          ))}
-          <div className="remote-aws-table-row">
-            <span className="remote-aws-table-name">
-              Elasticsearch index: {check.index.indexName}
-            </span>
-            <span className={check.index.isExisting ? 'remote-aws-ok' : 'remote-aws-bad'}>
-              {check.index.isExisting ? 'EXISTS' : 'MISSING'}
-            </span>
+      {store.isIndexRecreateConfirmOpen ? (
+        <div className="remote-index-confirm">
+          <div>
+            Recreating deletes {store.indexRecreateDocumentCount ?? 'the existing'} indexed
+            document(s). DynamoDB data is not deleted.
           </div>
-          <div className="remote-aws-table-row">
-            <span className="remote-aws-table-name">pending index journals</span>
-            <span>{check.journalPendingCount ?? '-'}</span>
+          <div className="remote-login-buttons">
+            <button
+              type="button"
+              className="tab-search-control-button remote-destructive-button"
+              disabled={isBusy}
+              onClick={() => void store.indexRecreate(true)}
+            >
+              Confirm Recreate
+            </button>
+            <button
+              type="button"
+              className="tab-search-control-button"
+              disabled={isBusy}
+              onClick={() => store.cancelIndexRecreate()}
+            >
+              Cancel
+            </button>
           </div>
         </div>
       ) : null}
+      {index ? (
+        <div className="remote-aws-table">
+          <div className="remote-aws-table-row">
+            <span className="remote-aws-table-name">{index.indexName}</span>
+            <span className={index.isExisting ? 'remote-aws-ok' : 'remote-aws-bad'}>
+              {index.isExisting ? 'EXISTS' : 'MISSING'}
+            </span>
+          </div>
+          <div className="remote-aws-table-row">
+            <span>Configuration</span>
+            <span className={index.isConfigConsistent ? 'remote-aws-ok' : 'remote-aws-bad'}>
+              {index.isConfigConsistent === null
+                ? '-'
+                : index.isConfigConsistent ? 'CONSISTENT' : 'DIFFERS'}
+            </span>
+          </div>
+          <div className="remote-aws-table-row">
+            <span>Indexed documents</span>
+            <span>{index.documentCount ?? '-'}</span>
+          </div>
+          {index.message ? <div className="remote-config-issue">{index.message}</div> : null}
+          {index.configIssueList.map((issue) => (
+            <div className="remote-config-issue" key={issue}>{issue}</div>
+          ))}
+        </div>
+      ) : (
+        <div className="remote-cloud-empty">Run Check Index to load index information.</div>
+      )}
     </div>
   )
 })
+
+const RemoteCheckHistory = observer(function RemoteCheckHistory({
+  store
+}: {
+  store: RemoteStore
+}) {
+  const checkList = store.configCheckHistory?.checkList ?? []
+  return (
+    <div className="remote-cloud-tab-panel">
+      <div className="remote-login-buttons">
+        <button
+          type="button"
+          className="tab-search-control-button"
+          disabled={!store.isLoggedIn}
+          onClick={() => void store.configCheckHistoryFetch()}
+        >
+          Refresh History
+        </button>
+      </div>
+      {checkList.length > 0 ? (
+        <div className="remote-check-history">
+          {checkList.map((record) => (
+            <div className="remote-check-history-row" key={record.checkId}>
+              <span>{record.checkType === 'dynamodbTables' ? 'DynamoDB tables' : 'Search index'}</span>
+              <span className={record.isPassed ? 'remote-aws-ok' : 'remote-aws-bad'}>
+                {record.isPassed ? 'PASSED' : 'FAILED'}
+              </span>
+              <span>{formatCheckTime(record.checkAtMs)}</span>
+              <span>{record.trigger}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="remote-cloud-empty">No cached configuration checks.</div>
+      )}
+    </div>
+  )
+})
+
+function formatCheckTime(timeMs: number) {
+  if (!Number.isFinite(timeMs)) return '-'
+  return new Date(timeMs).toLocaleString()
+}

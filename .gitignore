@@ -35,6 +35,11 @@ issue_*.md
 # real config, refer to config-two-layer
 config.0.*
 
+
+
+*.pyc
+__pycache__/
+
 # Temporary files
 *.tmp
 *~
