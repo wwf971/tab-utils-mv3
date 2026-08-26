@@ -14,7 +14,7 @@
     ],
     "action": {
         "default_popup": "popup/build/index.html",
-        "default_icon": "./icon/icon.png",
+        "default_icon": "./icon/icon-48x48.png",
         "default_title": "Tab Utils"
     },
     "background": {
@@ -34,13 +34,18 @@
     },
     "browser_specific_settings": {
         "gecko": {
-            "id": "tab-utils@timwang.local"
+            "id": "tab-utils@wwf971",
+            "data_collection_permissions": {
+                "required": [
+                    "browsingActivity"
+                ]
+            }
         }
     },
     "icons": {
-        "16": "./icon/icon.png",
-        "48": "./icon/icon.png",
-        "128": "./icon/icon.png"
+        "16": "./icon/icon-16x16.png",
+        "48": "./icon/icon-48x48.png",
+        "128": "./icon/icon-128x128.png"
     },
     "commands": {
         "move_tab_to_last": {

@@ -5,7 +5,7 @@ import { PopupStore } from '../PopupStore'
 import { RemoteWindowSelect } from './RemoteWindowSelect'
 import './RemoteUploadPanel.css'
 
-// Inline panel in the local Search tab (same pattern as the bring-tabs panel):
+// Inline panel in the local Search tab:
 // upload the listed local tabs to a remote window in one backend transaction,
 // and close them locally on confirmed success when the checkbox is on.
 export const RemoteUploadPanel = observer(function RemoteUploadPanel({

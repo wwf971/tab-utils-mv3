@@ -458,14 +458,20 @@ extension keeps its local features usable.
 ## Backend Code Boundaries
 
 ```text
-backend/tab_server.py        # http entry, auth, api routing, core logic of each api
-backend/tab_server_db.py     # dynamodb tables, item access, transactions, lexorank calc, journal
-backend/tab_server_index.py  # general index api + elasticsearch implementation
-backend/config.yaml          # example config, tracked
-backend/config.0.yaml        # real config, untracked
+backend/tab_server.py            # http entry, auth, api routing, core logic of each api
+backend/tab_server_index.py      # general index api + elasticsearch implementation
+backend/config.yaml              # example config (auth, elasticsearch, server), tracked
+backend/config.0.yaml            # real config, untracked
+
+backend-aws/tab_server_db.py     # dynamodb item access, transactions, lexorank calc, journal
+backend-aws/ensure_architect.py  # IaC: table specs, integrity check, ensure (create missing)
+backend-aws/config.yaml          # example aws config (region, keys, table prefix), tracked
+backend-aws/config.0.yaml        # real aws config, untracked
 ```
 
-The server framework is FastAPI. The core logic of each api stays as a short readable block in `tab_server.py`, calling named functions of the db and index modules; refer to `backend-design.md`.
+The server framework is Flask. The core logic of each api stays as a short readable block in `tab_server.py`, calling named functions of the db and index modules; refer to `backend-design.md`.
+
+Everything that talks to aws lives under `backend-aws`, together with its own two config layers. `ensure_architect.py` is the IaC entry: it holds the table specs as the single source of truth and can be run directly from the terminal (`python ensure_architect.py`) to ensure the tables exist, instead of creating them manually in the aws console. The server reaches the same functions through `tab_server_db.aws_check()` and `aws_init()`, so the maintenance apis and the terminal script cannot diverge.
 
 All responses use the `{code, data, message}` envelope: code 0 for success, negative for failure.
 
@@ -489,7 +495,7 @@ Everything is driven by the remote MobX store: server data (windows, tabs, tags)
 
 ### Upload from the Search tab
 
-Uploading uses the right-click menu of the local Search tab plus an inline panel (same pattern as the bring-tabs panel):
+Uploading uses the right-click menu of the local Search tab plus an inline panel:
 
 ```text
 right-click menu

@@ -1,5 +1,4 @@
-fastapi>=0.110
-uvicorn>=0.29
+flask>=3.0
 boto3>=1.34
 elasticsearch>=8.12
 pyyaml>=6.0

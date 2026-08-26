@@ -108,8 +108,12 @@
   border-radius: 2px;
   padding: 2px 4px;
   font-size: 12px;
-  min-height: 16px;
+  line-height: 16px;
+  height: 22px;
+  max-height: 22px;
   outline: none;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .remote-window-select-search-empty::before {

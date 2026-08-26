@@ -5,16 +5,17 @@ Tab Cloud uses six DynamoDB tables. DynamoDB is the source of truth for remote w
 The normal initialization path is:
 
 ```text
-backend AWS config
-  -> backend /api/maintenance/awsInit
+aws config (backend-aws/config.yaml + config.0.yaml)
+  -> python ensure_architect.py        (terminal)
+     or backend /api/maintenance/awsInit
        -> create six missing DynamoDB tables
-       -> create the missing Elasticsearch index
+       -> create the missing Elasticsearch index (awsInit only)
   -> Check Tables
        -> every table is ACTIVE
        -> the Elasticsearch index exists
 ```
 
-Use the backend **Initialize** action when possible. It creates the exact key and index schemas expected by the code. Manual table creation is described below for cases where the backend identity is not allowed to create tables.
+Use `ensure_architect.py` or the backend **Initialize** action when possible; both run the same code and create the exact key and index schemas expected by the backend. The table specs live in `ensure_architect.py` as the single source of truth. Manual table creation is described below for cases where the backend identity is not allowed to create tables.
 
 ## Required DynamoDB structure
 
@@ -151,7 +152,7 @@ TTL must stay disabled unless a separate expiration design is added. Trashed ite
 
 Choose one AWS Region and keep the backend configuration, IAM resource ARNs, and AWS Console Region identical.
 
-Create or update `backend/config.0.yaml`:
+Create or update `backend-aws/config.0.yaml`:
 
 ```yaml
 aws:

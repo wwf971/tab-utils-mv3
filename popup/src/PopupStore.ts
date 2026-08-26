@@ -75,6 +75,11 @@ interface RecoveryData {
 export const tabContextCountSideDefault = 10
 export const recoveryEventColCountDefault = 2
 
+// View modes of the search result area. A choice instead of a boolean, since
+// more views may be added later.
+export type TabSearchViewMode = 'list' | 'window'
+export const tabSearchViewModeDefault: TabSearchViewMode = 'list'
+
 const snapshotConfigDefault: SnapshotConfig = {
   isSnapshotEnabled: true,
   isEventLogEnabled: true,
@@ -153,6 +158,14 @@ export class PopupStore {
   // Configured tab count on each side of the center tab. Loading more also
   // extends the loaded range by this count.
   tabContextCountSide = tabContextCountSideDefault
+  // Current view of the search result area: 'list' shows one flat match list,
+  // 'window' shows windows at the left side and the selected window's matches
+  // at the right, like the snapshot detail.
+  searchViewCurrent: TabSearchViewMode = tabSearchViewModeDefault
+  // Configured default view, applied when the popup opens.
+  searchViewDefault: TabSearchViewMode = tabSearchViewModeDefault
+  // Window chosen in the window-view sidebar of the Search tab.
+  searchWindowSourceIdSelected: number | null = null
   // Search over the live browser state, shown in the Search tab.
   tabSearch = new TabSearchCore({
     source: createLiveTabQuerySource(),
@@ -161,7 +174,7 @@ export class PopupStore {
   })
   // Search over one loaded snapshot, shown in that snapshot's detail tab.
   snapshotSearchById = new Map<string, TabSearchCore>()
-  // Bring-tabs panel, opened from the right-click menu of the Search tab.
+  // Bring-tabs popup, opened from the right-click menu of the Search tab.
   // Refer to TabBringCore for the operation model.
   tabBring: TabBringCore | null = null
   // Raised on every open; the panel is keyed by it so a reopen remounts it.
@@ -190,6 +203,7 @@ export class PopupStore {
           'enable_badge_show_current_window_tab_count',
           'enable_badge_show_total_tab_count',
           'search_context_tab_count_side',
+          'search_view_default',
           'recovery_event_column_count'
         ]),
         chrome.runtime.sendMessage({ action: 'snapshotGetState' })
@@ -200,6 +214,8 @@ export class PopupStore {
         this.tabContextCountSide = getTabContextCountSideValid(
           settingsResult.search_context_tab_count_side
         )
+        this.searchViewDefault = getSearchViewModeValid(settingsResult.search_view_default)
+        this.searchViewCurrent = this.searchViewDefault
         this.recoveryEventColCount = getRecoveryEventColCountValid(
           settingsResult.recovery_event_column_count
         )
@@ -351,6 +367,82 @@ export class PopupStore {
 
   setSearchButtonOffsetLeft(offsetLeft: number) {
     this.buttonOffsetLeftById.set('tab-search', offsetLeft)
+  }
+
+  // Windows that contain matches of the live search, in window order.
+  get searchWindowItems() {
+    const windowById = new Map<number, {
+      windowSourceId: number
+      windowIndex: number
+      matchCount: number
+    }>()
+    for (const item of this.tabSearch.items) {
+      const windowItem = windowById.get(item.windowSourceId)
+      if (windowItem) {
+        windowItem.matchCount += 1
+      } else {
+        windowById.set(item.windowSourceId, {
+          windowSourceId: item.windowSourceId,
+          windowIndex: item.windowIndex,
+          matchCount: 1
+        })
+      }
+    }
+    return [...windowById.values()].sort(
+      (itemA, itemB) => itemA.windowIndex - itemB.windowIndex
+    )
+  }
+
+  // The chosen sidebar window when it still has matches, otherwise the first
+  // window with matches.
+  get searchWindowSourceIdEffective() {
+    const windowItems = this.searchWindowItems
+    const isSelectedPresent = windowItems.some(
+      (windowItem) => windowItem.windowSourceId === this.searchWindowSourceIdSelected
+    )
+    if (isSelectedPresent) return this.searchWindowSourceIdSelected
+    return windowItems[0]?.windowSourceId ?? null
+  }
+
+  setSearchViewCurrent(viewMode: unknown) {
+    this.searchViewCurrent = getSearchViewModeValid(viewMode)
+    // Entering the window view while a context is open selects the context's
+    // window in the sidebar, so the context slice stays visible.
+    const context = this.tabSearch.contextSingle
+    if (this.searchViewCurrent === 'window' && context) {
+      this.searchWindowSourceIdSelected = context.windowSourceId
+    }
+  }
+
+  setSearchWindowSourceIdSelected(windowSourceId: number) {
+    if (this.searchWindowSourceIdSelected === windowSourceId) return
+    this.searchWindowSourceIdSelected = windowSourceId
+    const context = this.tabSearch.contextSingle
+    if (context && context.windowSourceId !== windowSourceId) {
+      // The context belongs to the previously shown window. Leaving that
+      // window exits the context, like committing a new search text does.
+      this.tabSearch.exitContextAll()
+      this.tabSearch.setSelectedIds([])
+      return
+    }
+    if (!context) {
+      // Same rule as the snapshot window sidebar: a window switch drops the
+      // selection, so actions never act on tabs that are no longer visible.
+      this.tabSearch.setSelectedIds([])
+    }
+  }
+
+  // Entering a context in the window view also selects the context's window
+  // in the sidebar, so the context slice is visible right away.
+  async enterTabSearchContext(tabSourceId: number | null | undefined) {
+    const isEntered = await this.tabSearch.enterContext(tabSourceId)
+    if (isEntered) {
+      runInAction(() => {
+        const context = this.tabSearch.contextSingle
+        if (context) this.searchWindowSourceIdSelected = context.windowSourceId
+      })
+    }
+    return isEntered
   }
 
   async runTabSearchAction(
@@ -555,6 +647,15 @@ export class PopupStore {
       await chrome.runtime.sendMessage({
         action: 'updateSettings',
         settings: { search_context_tab_count_side: countNext }
+      })
+      return
+    }
+    if (valueId === 'search_view_default') {
+      const viewNext = getSearchViewModeValid(valueNext)
+      this.searchViewDefault = viewNext
+      await chrome.runtime.sendMessage({
+        action: 'updateSettings',
+        settings: { search_view_default: viewNext }
       })
       return
     }
@@ -1108,6 +1209,10 @@ function toPlainClone<T>(value: T): T {
 
 function getErrorText(error: unknown) {
   return error instanceof Error ? error.message : String(error)
+}
+
+function getSearchViewModeValid(value: unknown): TabSearchViewMode {
+  return value === 'window' ? 'window' : tabSearchViewModeDefault
 }
 
 function getTabContextCountSideValid(value: unknown) {

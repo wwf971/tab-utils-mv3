@@ -50,7 +50,8 @@
 .tab-item-example-search-field {
   box-sizing: border-box;
   width: min(520px, 100%);
-  min-height: 27px;
+  height: 27px;
+  max-height: 27px;
   padding: 3px 6px;
   border: 1px solid #dadce0;
   border-radius: 1px;

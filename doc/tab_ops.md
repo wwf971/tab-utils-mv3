@@ -10,9 +10,20 @@ The search panel lets the user find open tabs, select results, and act on them. 
 `PopupStore` is the source of truth: the fetched items, the selected tab IDs of each view, the loaded context range, and the running action. `SearchPanel` renders from the store and sends user attempts back to it. The search state itself lives in a reusable `TabSearchCore` class, which the snapshot detail view also uses over its own steady data.
 
 
+### Search result views
+
+The result area has two views, switched by a segmented control at the start of the button group:
+
+- `list` shows every match in one flat list.
+- `window` shows the windows that contain matches at the left side (the shared `WindowSidebar` component, also used by the snapshot detail) and the selected window's matches at the right.
+
+The view choice lives in `PopupStore.searchViewCurrent` and is not persisted. The view shown when the popup opens is a setting in the Common tab (`search_view_default`, an enum, default `list`), stored in `storage.sync` through the background `updateSettings` action like the other common settings.
+
+In the window view, switching windows drops the tab selection, and leaving the window that owns an open context view exits that context.
+
 ### Search result selection behavior
 
-Rows support multiple selection: plain click selects one row, shift+click selects a range, ctrl+click toggles one row. Right-clicking a row inside the selection keeps the selection; right-clicking outside it selects just that row.
+Rows support multiple selection: plain click selects one row, shift+click selects a range, ctrl+click toggles one row. Right-clicking a row inside the selection keeps the selection; right-clicking outside it selects just that row. The selected IDs keep the order rows were selected: clicks append at the end, and a shift range keeps the anchor-to-target direction. Ordered operations, such as uploading tabs to remote, rely on this order.
 
 The result view and the context view each keep their own selected IDs, so a background-driven refresh of one view cannot disturb the selection of the other.
 
@@ -79,7 +90,7 @@ Editing the search text exits the context view, because the context belongs to a
 
 Core model: source tabs --> target tab. One or many source tabs are moved to directly before or after one target tab, in the target's window, keeping their given order.
 
-Core UI behavior: main search panel --> menu item --> secondary search panel. One side of the operation is fixed by the right-clicked selection; the other side is picked inside the panel. The operation is available in the result view and in the context view alike.
+Core UI behavior: main search panel --> menu item --> bring popup panel. One side of the operation is fixed by the right-clicked selection; the other side is picked inside the panel. Clicking the backdrop closes the popup unless Apply is running. The operation is available in the result view and in the context view alike.
 
 ```text
 main search panel
@@ -101,10 +112,11 @@ The secondary search panel runs its own `TabSearchCore` over the live browser st
 - multiple selection, used to pick the source tabs
 - single selection, used to pick the target tab
 
-The panel offers the current active tab as a special option above the search field:
+The panel offers the current active tab as a special option:
 
-- when picking source tabs, ticking the current tab adds it next to the searched picks; other tabs can still be picked
-- when picking the target tab, ticking the current tab decides the target, so searching is forbidden while it is ticked
+- when picking source tabs, ticking the current tab uses it as the source
+- when picking the target tab, ticking the current tab decides the target
+- when the current tab fills either side, the search field and result list are hidden (that area is unused); untick the current tab to search again
 
 Tabs on the fixed side of the operation are greyed out in the panel's results and cannot be picked, so a tab can never be brought next to itself. The current tab is resolved once when the panel opens.
 

@@ -2,11 +2,18 @@ import { observer } from 'mobx-react-lite'
 import { FolderView } from '@wwf971/react-comp-misc'
 import { PopupStore } from './PopupStore'
 import { SearchTabCell } from './SearchPanel'
+import {
+  getSearchFieldText,
+  handleSearchFieldKeyDown,
+  handleSearchFieldPaste
+} from './searchFieldPlain'
 import './TabBringPanel.css'
 
-// Panel of one bring operation (refer to TabBringCore): one side of the
+// Popup of one bring operation (refer to TabBringCore): one side of the
 // operation is fixed by the right-click menu, the other side is picked here,
 // through a secondary search and the special "current tab" option.
+// Clicking the backdrop closes it. When the current tab fills a side, the
+// unused search result area is hidden.
 export const TabBringPanel = observer(function TabBringPanel({
   store
 }: {
@@ -39,14 +46,26 @@ export const TabBringPanel = observer(function TabBringPanel({
         tab: {
           ...tab,
           matchText: search.textCommitted,
-          isCloseVisible: false
+          isCloseVisible: false,
+          contentOffsetLeft: search.contentOffsetLeftById.get(tab.tabSourceId) ?? 0
         }
       }
     }
   })
 
+  const isCompact = bring.isPanelCompact
+
   return (
-    <div className="tab-bring-panel">
+    <div
+      className="tab-bring-backdrop"
+      onClick={() => {
+        if (!isBusy) store.closeTabBring()
+      }}
+    >
+      <div
+        className={`tab-bring-panel ${isCompact ? 'tab-bring-panel-compact' : ''}`}
+        onClick={(event) => event.stopPropagation()}
+      >
       <div className="tab-bring-title">
         {bring.pickSide === 'source'
           ? 'Bring tab(s) to'
@@ -90,32 +109,44 @@ export const TabBringPanel = observer(function TabBringPanel({
         </div>
       ) : null}
 
-      <div
-        className={[
-          'tab-search-field',
-          search.textInput ? '' : 'tab-search-field-empty',
-          bring.isSearchForbidden ? 'tab-bring-search-forbidden' : ''
-        ].filter(Boolean).join(' ')}
-        contentEditable={!isSearchDisabled}
-        suppressContentEditableWarning
-        spellCheck={false}
-        role="textbox"
-        data-placeholder={isPickSingle ? 'Search the target tab' : 'Search tabs to bring'}
-        onInput={(event) => {
-          search.setTextInput(event.currentTarget.textContent ?? '')
-        }}
-      />
+      {!isCompact ? (
+        <div
+          className={[
+            'tab-search-field',
+            search.textInput ? '' : 'tab-search-field-empty',
+            bring.isSearchForbidden ? 'tab-bring-search-forbidden' : ''
+          ].filter(Boolean).join(' ')}
+          contentEditable={!isSearchDisabled}
+          suppressContentEditableWarning
+          spellCheck={false}
+          role="textbox"
+          data-placeholder={isPickSingle ? 'Search the target tab' : 'Search tabs to bring'}
+          onPaste={(event) => {
+            handleSearchFieldPaste(event)
+            search.setTextInput(getSearchFieldText(event.currentTarget))
+          }}
+          onKeyDown={handleSearchFieldKeyDown}
+          onInput={(event) => {
+            search.setTextInput(getSearchFieldText(event.currentTarget))
+          }}
+        />
+      ) : null}
 
-      <div className={`tab-search-message tab-search-message-${search.messageStatus}`}>
-        {bring.isSearchForbidden
-          ? 'The current tab is picked as the target. Untick it to search'
-          : search.messageText || (
-            isPickSingle
-              ? 'Enter text to search the target tab'
-              : 'Enter text to search tabs to bring'
-          )}
-      </div>
+      {!isCompact || search.messageText ? (
+        <div className={`tab-search-message tab-search-message-${search.messageStatus}`}>
+          {isCompact
+            ? search.messageText
+            : bring.isSearchForbidden
+              ? 'The current tab is picked as the target. Untick it to search'
+              : search.messageText || (
+                isPickSingle
+                  ? 'Enter text to search the target tab'
+                  : 'Enter text to search tabs to bring'
+              )}
+        </div>
+      ) : null}
 
+      {!isCompact ? (
       <div
         className={`tab-bring-results tab-search-results ${bring.isSearchForbidden ? 'tab-bring-results-forbidden' : ''}`}
       >
@@ -157,11 +188,18 @@ export const TabBringPanel = observer(function TabBringPanel({
               const tabSourceId = Number(eventData.rowId)
               if (Number.isInteger(tabSourceId)) bring.toggleTabPicked(tabSourceId)
             }
+            if (eventType === 'tabContentOffsetChange') {
+              search.setContentOffsetLeft(
+                Number(eventData.tabSourceId),
+                Number(eventData.offsetLeft)
+              )
+            }
             return { code: 0 }
           }}
         />
       </div>
-      {search.isMore && !bring.isSearchForbidden ? (
+      ) : null}
+      {search.isMore && !bring.isSearchForbidden && !isCompact ? (
         <button
           type="button"
           className="tab-search-load-more"
@@ -189,6 +227,7 @@ export const TabBringPanel = observer(function TabBringPanel({
         >
           Cancel
         </button>
+      </div>
       </div>
     </div>
   )

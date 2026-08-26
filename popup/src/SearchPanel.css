@@ -13,7 +13,8 @@
   position: relative;
   width: 100%;
   min-width: 0;
-  min-height: 27px;
+  height: 27px;
+  max-height: 27px;
   padding: 3px 6px;
   border: 1px solid #cbd5e1;
   border-radius: 1px;
@@ -113,9 +114,23 @@
 }
 
 .tab-search-results {
+  display: flex;
   width: 100%;
   min-width: 0;
+  gap: 4px;
   user-select: none;
+}
+
+/* The result table fills the space right of the optional window sidebar. */
+.tab-search-results > .folder-view-container {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* View switcher inside the control button track */
+.tab-search-view-switch {
+  flex: 0 0 auto;
 }
 
 .tab-search-results .folder-view-container,

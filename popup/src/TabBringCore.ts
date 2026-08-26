@@ -9,10 +9,9 @@ import { TabSearchCore, createLiveTabQuerySource } from './TabSearchCore'
 // picked inside the panel, through a secondary search over the live browser
 // state and through the special "current tab" option:
 // - pickSide 'source': the target is fixed; the panel picks source tabs
-//   (multiple). Ticking the current tab adds it next to the searched picks.
+//   (multiple). Ticking the current tab uses it as the source and hides search.
 // - pickSide 'target': the source tabs are fixed; the panel picks the target
-//   tab (single). Ticking the current tab decides the target, so searching
-//   is forbidden while it is ticked.
+//   tab (single). Ticking the current tab decides the target and hides search.
 
 export interface TabBringRef {
   tabSourceId: number
@@ -58,6 +57,11 @@ export class TabBringCore {
   // Picking the current tab as the target decides the single pick entirely.
   get isSearchForbidden() {
     return this.pickSide === 'target' && this.isTabCurrentPicked
+  }
+
+  // Current tab already fills one side, so the search result area is unused.
+  get isPanelCompact() {
+    return this.isTabCurrentPicked
   }
 
   // Tabs that cannot be picked in the result list: the fixed side of the

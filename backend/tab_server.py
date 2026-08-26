@@ -2,8 +2,9 @@
 # Tab cloud backend server: http entry, auth, and the core logic of each api.
 # Refer to tab_cloud.md for the design and tab_cloud_api.md for the api list.
 #
-# Reading guide: every route below is a short core-logic block; storage and
-# index details live in tab_server_db.py and tab_server_index.py.
+# Reading guide: every route below is a short core-logic block; storage
+# details live in ../backend-aws/tab_server_db.py and index details in
+# tab_server_index.py.
 #
 # run: python tab_server.py
 
@@ -11,12 +12,17 @@ import base64
 import hashlib
 import hmac
 import os
+import sys
 
 import yaml
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from flask import Flask, jsonify, make_response, request
+from werkzeug.exceptions import HTTPException
 
+# aws-related modules (dynamodb layer, IaC scripts) live in ../backend-aws
+DIR_SELF = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(DIR_SELF), "backend-aws"))
+
+import ensure_architect
 import tab_server_db as db
 import tab_server_check as config_check
 import tab_server_index as index
@@ -46,7 +52,7 @@ def ok(data=None, message=None):
 		response["data"] = data
 	if message:
 		response["message"] = message
-	return response
+	return jsonify(response)
 
 
 # ---------------------------------------------------------------------------
@@ -54,10 +60,8 @@ def ok(data=None, message=None):
 # ---------------------------------------------------------------------------
 
 def load_config():
-	dir_path = os.path.dirname(os.path.realpath(__file__))
-
 	def read_yaml(file_name):
-		file_path = os.path.join(dir_path, file_name)
+		file_path = os.path.join(DIR_SELF, file_name)
 		if not os.path.exists(file_path):
 			return {}
 		with open(file_path, "r", encoding="utf-8") as config_file:
@@ -75,6 +79,9 @@ def load_config():
 
 
 config = load_config()
+# the aws config has its own two layers under backend-aws, next to the IaC
+# scripts that also read it. refer to backend-aws/ensure_architect.py.
+config["aws"] = ensure_architect.config_load().get("aws", {})
 db.init_db(config)
 index.init_index(config)
 
@@ -116,33 +123,52 @@ def user_of_request(request):
 # app
 # ---------------------------------------------------------------------------
 
-app = FastAPI()
-
+app = Flask(__name__)
 cors_origin_list = config.get("server", {}).get("cors_origin_list") or []
-app.add_middleware(
-	CORSMiddleware,
-	allow_origins=cors_origin_list if cors_origin_list else ["*"],
-	allow_methods=["*"],
-	allow_headers=["*"],
-)
 
 
-@app.exception_handler(Exception)
-async def handle_error(request, error):
+def cors_headers_set(response):
+	# empty cors_origin_list allows any origin (extension popup, local page, etc.)
+	origin = request.headers.get("Origin")
+	if cors_origin_list:
+		if origin in cors_origin_list:
+			response.headers["Access-Control-Allow-Origin"] = origin
+			response.headers.add("Vary", "Origin")
+	elif origin:
+		response.headers["Access-Control-Allow-Origin"] = origin
+	else:
+		response.headers["Access-Control-Allow-Origin"] = "*"
+	response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+	response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+	return response
+
+
+@app.before_request
+def handle_options():
+	if request.method == "OPTIONS":
+		return make_response("", 204)
+
+
+@app.after_request
+def after_request(response):
+	return cors_headers_set(response)
+
+
+@app.errorhandler(Exception)
+def handle_error(error):
+	if isinstance(error, HTTPException):
+		return error.get_response()
 	if isinstance(error, ApiError):
-		return JSONResponse({"code": error.code, "message": error.message})
+		return jsonify({"code": error.code, "message": error.message})
 	if isinstance(error, (DbUnavailableError, IndexUnavailableError)):
-		return JSONResponse({"code": CODE_CLOUD, "message": str(error)})
+		return jsonify({"code": CODE_CLOUD, "message": str(error)})
 	if isinstance(error, DbConflictError):
-		return JSONResponse({"code": CODE_FAIL, "message": f"write conflict: {error}"})
-	return JSONResponse({"code": CODE_FAIL, "message": str(error)})
+		return jsonify({"code": CODE_FAIL, "message": f"write conflict: {error}"})
+	return jsonify({"code": CODE_FAIL, "message": str(error)})
 
 
-async def read_body(request):
-	try:
-		body = await request.json()
-	except Exception:
-		body = {}
+def read_body():
+	body = request.get_json(silent=True)
 	return body if isinstance(body, dict) else {}
 
 
@@ -225,8 +251,8 @@ def run_indexed_write(user_id, changes, tab_id_list, index_apply):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/auth/login")
-async def api_login(request: Request):
-	body = await read_body(request)
+def api_login():
+	body = read_body()
 	username = str(body.get("username", ""))
 	password = str(body.get("password", ""))
 	for user in config.get("auth", {}).get("users", []):
@@ -237,7 +263,7 @@ async def api_login(request: Request):
 
 
 @app.get("/api/status")
-async def api_status():
+def api_status():
 	table_list, table_record = run_table_config_check("status")
 	index_status, index_record = run_index_config_check("status")
 	return ok({
@@ -261,9 +287,9 @@ def get_window_live(user_id, window_id):
 
 
 @app.post("/api/window/list")
-async def api_window_list(request: Request):
+def api_window_list():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	items, cursor = db.window_list(user_id, body.get("cursor"), int(body.get("limit") or 100))
 	window_list = [
 		window_response(item, db.window_tab_count(user_id, item["id"]))
@@ -276,9 +302,9 @@ async def api_window_list(request: Request):
 
 
 @app.post("/api/window/create")
-async def api_window_create(request: Request):
+def api_window_create():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	rank = db.rank_between(db.window_rank_last(user_id), "")
 	window = db.window_item_make(user_id, str(body.get("title") or ""), rank)
 	db.transact_apply([db.change_put("Window", window, is_new_key=True)])
@@ -286,9 +312,9 @@ async def api_window_create(request: Request):
 
 
 @app.post("/api/window/update")
-async def api_window_update(request: Request):
+def api_window_update():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	window = get_window_live(user_id, str(body.get("windowId", "")))
 	window_new = {**window, "title": str(body.get("title") or ""),
 				  "modifyAt": db.now_ms(), "modifyAtTimezone": db.now_timezone_hour()}
@@ -297,9 +323,9 @@ async def api_window_update(request: Request):
 
 
 @app.post("/api/window/move")
-async def api_window_move(request: Request):
+def api_window_move():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	window = get_window_live(user_id, str(body.get("windowId", "")))
 	target = get_window_live(user_id, str(body.get("targetWindowId", "")))
 	placement = str(body.get("placement", "after"))
@@ -322,9 +348,9 @@ async def api_window_move(request: Request):
 
 
 @app.post("/api/window/trash")
-async def api_window_trash(request: Request):
+def api_window_trash():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	window = get_window_live(user_id, str(body.get("windowId", "")))
 	# trash the remaining live tabs batch by batch, each batch one transaction
 	while True:
@@ -347,9 +373,9 @@ async def api_window_trash(request: Request):
 
 
 @app.post("/api/window/deletePermanent")
-async def api_window_delete_permanent(request: Request):
+def api_window_delete_permanent():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	window = db.window_get_by_id(user_id, str(body.get("windowId", "")))
 	if not window:
 		raise ApiError(CODE_NOT_FOUND, "window not found")
@@ -385,9 +411,9 @@ def get_tabs_trashed(user_id, tab_id_list):
 
 
 @app.post("/api/tab/list")
-async def api_tab_list(request: Request):
+def api_tab_list():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	window = get_window_live(user_id, str(body.get("windowId", "")))
 	items, cursor = db.tab_list(user_id, window["id"], body.get("cursor"),
 								int(body.get("limit") or 100))
@@ -398,18 +424,18 @@ async def api_tab_list(request: Request):
 
 
 @app.post("/api/tab/get")
-async def api_tab_get(request: Request):
+def api_tab_get():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	tab_id_list = read_id_list(body, "tabIdList")
 	items = db.tab_get_by_ids(user_id, tab_id_list)
 	return ok({"tabList": [tab_response(item) for item in items]})
 
 
 @app.post("/api/tab/create")
-async def api_tab_create(request: Request):
+def api_tab_create():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	tab_input_list = body.get("tabList")
 	if not isinstance(tab_input_list, list) or len(tab_input_list) == 0:
 		raise ApiError(CODE_INVALID, "tabList is required")
@@ -485,9 +511,9 @@ def resolve_target_window(user_id, body, changes):
 
 
 @app.post("/api/tab/update")
-async def api_tab_update(request: Request):
+def api_tab_update():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	tab = get_tab_live(user_id, str(body.get("tabId", "")))
 	tab_new = {
 		**tab,
@@ -503,9 +529,9 @@ async def api_tab_update(request: Request):
 
 
 @app.post("/api/tab/move")
-async def api_tab_move(request: Request):
+def api_tab_move():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	tab_id_list = read_id_list(body, "tabIdList")
 	target_tab = get_tab_live(user_id, str(body.get("targetTabId", "")))
 	if target_tab["id"] in tab_id_list:
@@ -584,18 +610,18 @@ def trash_tabs_core(user_id, tabs):
 
 
 @app.post("/api/tab/trash")
-async def api_tab_trash(request: Request):
+def api_tab_trash():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	tabs = get_tabs_live(user_id, read_id_list(body, "tabIdList"))
 	tabs_new = trash_tabs_core(user_id, tabs)
 	return ok({"tabList": [tab_response(tab) for tab in tabs_new]})
 
 
 @app.post("/api/tab/restore")
-async def api_tab_restore(request: Request):
+def api_tab_restore():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	tabs = get_tabs_trashed(user_id, read_id_list(body, "tabIdList"))
 	window_target = None
 	if body.get("windowIdTarget"):
@@ -675,9 +701,9 @@ def resolve_restore_position(user_id, tab, window_target, windows_restored_by_id
 
 
 @app.post("/api/tab/deletePermanent")
-async def api_tab_delete_permanent(request: Request):
+def api_tab_delete_permanent():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	tabs = get_tabs_trashed(user_id, read_id_list(body, "tabIdList"))
 	changes = []
 	for tab in tabs:
@@ -691,9 +717,9 @@ async def api_tab_delete_permanent(request: Request):
 
 
 @app.post("/api/tab/context")
-async def api_tab_context(request: Request):
+def api_tab_context():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	tab = get_tab_live(user_id, str(body.get("tabId", "")))
 	count_before = min(200, max(0, int(body.get("countBefore") or 0)))
 	count_after = min(200, max(0, int(body.get("countAfter") or 0)))
@@ -712,9 +738,9 @@ async def api_tab_context(request: Request):
 
 
 @app.post("/api/trash/list")
-async def api_trash_list(request: Request):
+def api_trash_list():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	items, cursor = db.trash_list(user_id, body.get("cursor"), int(body.get("limit") or 100))
 	data = {"tabList": [tab_response(item) for item in items]}
 	if cursor:
@@ -723,9 +749,9 @@ async def api_trash_list(request: Request):
 
 
 @app.post("/api/trash/windowList")
-async def api_trash_window_list(request: Request):
+def api_trash_window_list():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	items, cursor = db.window_trash_list(user_id, body.get("cursor"),
 										 int(body.get("limit") or 100))
 	data = {"windowList": [window_response(item) for item in items]}
@@ -756,9 +782,9 @@ def tag_response(item):
 
 
 @app.post("/api/tag/create")
-async def api_tag_create(request: Request):
+def api_tag_create():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	tag_name = str(body.get("tagName") or "").strip()
 	if not tag_name:
 		raise ApiError(CODE_INVALID, "tagName is required")
@@ -775,15 +801,15 @@ async def api_tag_create(request: Request):
 
 
 @app.post("/api/tag/list")
-async def api_tag_list(request: Request):
+def api_tag_list():
 	user_id = user_of_request(request)
 	return ok({"tagList": [tag_response(item) for item in db.tag_list(user_id)]})
 
 
 @app.post("/api/tag/update")
-async def api_tag_update(request: Request):
+def api_tag_update():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	tag = get_tag(user_id, str(body.get("tagId", "")))
 	tag_new = {**tag}
 	if body.get("color") is not None:
@@ -803,9 +829,9 @@ async def api_tag_update(request: Request):
 
 
 @app.post("/api/tag/delete")
-async def api_tag_delete(request: Request):
+def api_tag_delete():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	tag = get_tag(user_id, str(body.get("tagId", "")))
 	changes = [db.change_delete("Tag", db.key_of("Tag", tag), tag)]
 	relations, _ = db.relation_list_of_tag(tag["id"], limit=1000)
@@ -821,9 +847,9 @@ async def api_tag_delete(request: Request):
 
 
 @app.post("/api/tag/assign")
-async def api_tag_assign(request: Request):
+def api_tag_assign():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	tag = get_tag(user_id, str(body.get("tagId", "")))
 	tabs = get_tabs_live(user_id, read_id_list(body, "tabIdList"))
 	changes = []
@@ -843,9 +869,9 @@ async def api_tag_assign(request: Request):
 
 
 @app.post("/api/tag/remove")
-async def api_tag_remove(request: Request):
+def api_tag_remove():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	tag = get_tag(user_id, str(body.get("tagId", "")))
 	tabs = get_tabs_live(user_id, read_id_list(body, "tabIdList"))
 	changes = []
@@ -862,9 +888,9 @@ async def api_tag_remove(request: Request):
 
 
 @app.post("/api/tag/tabList")
-async def api_tag_tab_list(request: Request):
+def api_tag_tab_list():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	tag = get_tag(user_id, str(body.get("tagId", "")))
 	relations, cursor = db.relation_list_of_tag(
 		tag["id"], body.get("cursor"), int(body.get("limit") or 100))
@@ -881,9 +907,9 @@ async def api_tag_tab_list(request: Request):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/group/create")
-async def api_group_create(request: Request):
+def api_group_create():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	tabs = get_tabs_live(user_id, read_id_list(body, "tabIdList"))
 	window_ids = {db.window_id_of_tab_path(tab["tabPath"]) for tab in tabs}
 	if len(window_ids) != 1:
@@ -916,9 +942,9 @@ async def api_group_create(request: Request):
 
 
 @app.post("/api/group/update")
-async def api_group_update(request: Request):
+def api_group_update():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	group = db.group_get(user_id, str(body.get("groupId", "")))
 	if not group:
 		raise ApiError(CODE_NOT_FOUND, "group not found")
@@ -932,9 +958,9 @@ async def api_group_update(request: Request):
 
 
 @app.post("/api/group/delete")
-async def api_group_delete(request: Request):
+def api_group_delete():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	group = db.group_get(user_id, str(body.get("groupId", "")))
 	if not group:
 		raise ApiError(CODE_NOT_FOUND, "group not found")
@@ -953,16 +979,16 @@ async def api_group_delete(request: Request):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/meta/get")
-async def api_meta_get(request: Request):
+def api_meta_get():
 	user_id = user_of_request(request)
 	meta_config = db.meta_config_get(user_id) or {}
 	return ok({"windowDefaultId": meta_config.get("windowDefaultId")})
 
 
 @app.post("/api/meta/update")
-async def api_meta_update(request: Request):
+def api_meta_update():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	window = get_window_live(user_id, str(body.get("windowDefaultId", "")))
 	meta_config = db.meta_config_get(user_id) or {}
 	meta_config.pop("userId", None)
@@ -977,9 +1003,9 @@ async def api_meta_update(request: Request):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/search")
-async def api_search(request: Request):
+def api_search():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	query_tree = body.get("query")
 	if isinstance(query_tree, str):
 		query_tree = query_tree.strip()
@@ -1119,7 +1145,7 @@ def index_maintenance_response(index_status):
 
 
 @app.post("/api/maintenance/awsCheck")
-async def api_aws_check(request: Request):
+def api_aws_check():
 	user_id = user_of_request(request)
 	table_list, _ = run_table_config_check("manual")
 	index_status, _ = run_index_config_check("manual")
@@ -1127,7 +1153,7 @@ async def api_aws_check(request: Request):
 
 
 @app.post("/api/maintenance/awsInit")
-async def api_aws_init(request: Request):
+def api_aws_init():
 	user_id = user_of_request(request)
 	db.aws_init()
 	index.index_ensure()
@@ -1137,14 +1163,14 @@ async def api_aws_init(request: Request):
 
 
 @app.post("/api/maintenance/tableCheck")
-async def api_table_check(request: Request):
+def api_table_check():
 	user_id = user_of_request(request)
 	table_list, _ = run_table_config_check("manual")
 	return ok(table_maintenance_response(user_id, table_list))
 
 
 @app.post("/api/maintenance/tableInit")
-async def api_table_init(request: Request):
+def api_table_init():
 	user_id = user_of_request(request)
 	try:
 		db.aws_init()
@@ -1159,14 +1185,14 @@ async def api_table_init(request: Request):
 
 
 @app.post("/api/maintenance/indexCheck")
-async def api_index_check(request: Request):
+def api_index_check():
 	user_of_request(request)
 	index_status, _ = run_index_config_check("manual")
 	return ok(index_maintenance_response(index_status))
 
 
 @app.post("/api/maintenance/indexInit")
-async def api_index_init(request: Request):
+def api_index_init():
 	user_of_request(request)
 	try:
 		index.index_ensure()
@@ -1178,18 +1204,18 @@ async def api_index_init(request: Request):
 
 
 @app.post("/api/maintenance/indexRecreate")
-async def api_index_recreate(request: Request):
+def api_index_recreate():
 	user_id = user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	index_status = index.index_check()
 	document_count = index_status.get("documentCount")
 	if document_count is not None and document_count > 0 \
 			and body.get("isConfirmedNonEmpty") is not True:
-		return {
+		return jsonify({
 			"code": -6,
 			"data": {"documentCount": document_count},
 			"message": "confirmation required before recreating a non-empty index",
-		}
+		})
 	try:
 		index.index_recreate()
 	except Exception:
@@ -1200,14 +1226,14 @@ async def api_index_recreate(request: Request):
 
 
 @app.post("/api/maintenance/configCheckHistory")
-async def api_config_check_history(request: Request):
+def api_config_check_history():
 	user_of_request(request)
-	body = await read_body(request)
+	body = read_body()
 	return ok(config_check.check_history(body.get("limit") or 20))
 
 
 @app.post("/api/maintenance/indexRepair")
-async def api_index_repair(request: Request):
+def api_index_repair():
 	user_id = user_of_request(request)
 	repair_count = 0
 	for journal in db.journal_list(user_id):
@@ -1218,7 +1244,7 @@ async def api_index_repair(request: Request):
 
 
 @app.post("/api/maintenance/indexRebuild")
-async def api_index_rebuild(request: Request):
+def api_index_rebuild():
 	user_id = user_of_request(request)
 	index.index_ensure()
 	doc_count = 0
@@ -1233,7 +1259,7 @@ async def api_index_rebuild(request: Request):
 
 
 if __name__ == "__main__":
-	import uvicorn
 	server_config = config.get("server", {})
-	uvicorn.run(app, host=server_config.get("host", "0.0.0.0"),
-				port=int(server_config.get("port", 8300)))
+	app.run(host=server_config.get("host", "0.0.0.0"),
+			port=int(server_config.get("port", 8300)),
+			threaded=True)

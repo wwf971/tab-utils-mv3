@@ -8,6 +8,11 @@ import {
   type TabItemConfig,
   type TabItemData
 } from '@wwf971/tab-manage-frontend-common'
+import {
+  getSearchFieldText,
+  handleSearchFieldKeyDown,
+  handleSearchFieldPaste
+} from '../searchFieldPlain'
 import './tabItemExamples.css'
 
 const SEARCH_DELAY_MS = 180
@@ -104,7 +109,7 @@ export function TabItemExamples() {
   return (
     <div className="tab-item-examples">
       <div className="tab-item-example-intro">
-        The close control stays fixed. Hover the content area and use the mouse wheel when text extends beyond the available width.
+        The close control stays fixed. Drag the title/url area horizontally when text extends beyond the available width.
       </div>
 
       <div className="tab-item-example-section">
@@ -150,8 +155,13 @@ export function TabItemExamples() {
           spellCheck={false}
           role="textbox"
           data-placeholder="Search title or URL"
+          onPaste={(event) => {
+            handleSearchFieldPaste(event)
+            queueSearchCommit(getSearchFieldText(event.currentTarget))
+          }}
+          onKeyDown={handleSearchFieldKeyDown}
           onInput={(event) => {
-            queueSearchCommit(event.currentTarget.textContent ?? '')
+            queueSearchCommit(getSearchFieldText(event.currentTarget))
           }}
         />
         <div className="tab-item-example-search-list">

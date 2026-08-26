@@ -748,6 +748,7 @@ const PopupConfigContent = observer(function PopupConfigContent({
     remoteWorkspace: store,
     enable_move_new_tab_next_to_current: store.isMoveNewTabNextToCurrentEnabled,
     search_context_tab_count_side: store.tabContextCountSide,
+    search_view_default: store.searchViewDefault,
     badge_tab_counts: store.badgeTabCounts,
     localStorageOverview: store,
     isSnapshotEnabled: store.snapshotConfig.isSnapshotEnabled,
@@ -837,6 +838,17 @@ const PopupConfigContent = observer(function PopupConfigContent({
                 type: 'custom',
                 compName: 'contextTabCount',
                 defaultValue: 10
+              },
+              {
+                id: 'search_view_default',
+                label: 'Default search view',
+                description: 'View of the search results when the popup opens: one flat list, or windows at the left side',
+                type: 'enum',
+                options: [
+                  { value: 'list', labelText: 'List' },
+                  { value: 'window', labelText: 'Windows' }
+                ],
+                defaultValue: 'list'
               }
             ]
           },

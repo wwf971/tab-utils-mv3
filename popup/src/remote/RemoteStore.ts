@@ -142,6 +142,7 @@ export class RemoteStore {
   isSearchUrl = true
   items: RemoteTabItem[] = []
   selectedIds: string[] = []
+  contentOffsetLeftById = new Map<string, number>()
   searchAction: string | null = null
   messageStatus: 'idle' | 'loading' | 'success' | 'error' = 'idle'
   messageText = ''
@@ -657,6 +658,10 @@ export class RemoteStore {
     this.textInput = text
     if (this.context) this.exitContext()
     this.queueCommit()
+  }
+
+  setContentOffsetLeft(tabId: string, offsetLeft: number) {
+    this.contentOffsetLeftById.set(tabId, Math.max(0, offsetLeft))
   }
 
   queueCommit() {

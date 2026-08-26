@@ -2,6 +2,11 @@ import { useEffect, useRef } from 'react'
 import { observer } from 'mobx-react-lite'
 import { EditIcon, CrossIcon } from '@wwf971/react-comp-misc'
 import { RemoteStore } from './RemoteStore'
+import {
+  getSearchFieldText,
+  handleSearchFieldKeyDown,
+  handleSearchFieldPaste
+} from '../searchFieldPlain'
 import './RemoteWindowSelect.css'
 
 // Remote window selector (single selection), conforming to selector.md:
@@ -105,8 +110,13 @@ export const RemoteWindowSelect = observer(function RemoteWindowSelect({
             spellCheck={false}
             role="textbox"
             data-placeholder="Search remote windows"
+            onPaste={(event) => {
+              handleSearchFieldPaste(event)
+              store.selectorSetSearchText(selectorId, getSearchFieldText(event.currentTarget))
+            }}
+            onKeyDown={handleSearchFieldKeyDown}
             onInput={(event) => {
-              store.selectorSetSearchText(selectorId, event.currentTarget.textContent ?? '')
+              store.selectorSetSearchText(selectorId, getSearchFieldText(event.currentTarget))
             }}
           />
           <div className="remote-window-select-buttons">

@@ -7,14 +7,7 @@ auth:
     - username: user1
       password: pass1
 
-# aws config(this backend service --> aws services)
-aws:
-  region_name: ap-northeast-1
-  access_key_id: EXAMPLE_ACCESS_KEY_ID
-  secret_access_key: EXAMPLE_SECRET_ACCESS_KEY
-  dynamodb:
-    table_name_prefix: tabCloud
-    # endpoint_url: http://localhost:8000  # uncomment for local dynamodb during test
+# aws config lives in ../backend-aws/config.yaml + config.0.yaml
 
 # elasticsearch index config
 elasticsearch:

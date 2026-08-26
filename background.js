@@ -66,6 +66,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 			// Popup-only setting; the background just persists it.
 			settingsNext.search_context_tab_count_side = message.settings.search_context_tab_count_side;
 		}
+		if ('search_view_default' in message.settings) {
+			// Popup-only setting; the background just persists it.
+			settingsNext.search_view_default = message.settings.search_view_default;
+		}
 		if ('recovery_event_column_count' in message.settings) {
 			// Popup-only setting; the background just persists it.
 			settingsNext.recovery_event_column_count = message.settings.recovery_event_column_count;

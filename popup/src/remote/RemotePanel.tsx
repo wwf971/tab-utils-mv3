@@ -14,6 +14,11 @@ import {
 import { RemoteStore, type RemoteTabItem } from './RemoteStore'
 import { RemoteWindowSelect } from './RemoteWindowSelect'
 import { RemoteSettingsPanel } from './RemoteSettingsPanel'
+import {
+  getSearchFieldText,
+  handleSearchFieldKeyDown,
+  handleSearchFieldPaste
+} from '../searchFieldPlain'
 import './RemotePanel.css'
 
 const contextEdgeRowIdBefore = 'context-edge-before'
@@ -129,7 +134,13 @@ export const RemotePanel = observer(function RemotePanel({
       ...context.items.map((item) => ({
         id: item.id,
         rowClassName: item.id === context.tabCenterId ? 'tab-context-center' : '',
-        data: { tab: { ...item, matchText: store.textCommitted } }
+        data: {
+          tab: {
+            ...item,
+            matchText: store.textCommitted,
+            contentOffsetLeft: store.contentOffsetLeftById.get(item.id) ?? 0
+          }
+        }
       })),
       {
         id: contextEdgeRowIdAfter,
@@ -145,7 +156,13 @@ export const RemotePanel = observer(function RemotePanel({
     ]
     : store.items.map((item) => ({
       id: item.id,
-      data: { tab: { ...item, matchText: store.textCommitted } }
+      data: {
+        tab: {
+          ...item,
+          matchText: store.textCommitted,
+          contentOffsetLeft: store.contentOffsetLeftById.get(item.id) ?? 0
+        }
+      }
     }))
 
   const buttons = store.isTrashScope
@@ -269,8 +286,13 @@ export const RemotePanel = observer(function RemotePanel({
         spellCheck={false}
         role="textbox"
         data-placeholder={store.isTrashScope ? 'Search trashed tabs' : 'Search remote tabs'}
+        onPaste={(event) => {
+          handleSearchFieldPaste(event)
+          store.setTextInput(getSearchFieldText(event.currentTarget))
+        }}
+        onKeyDown={handleSearchFieldKeyDown}
         onInput={(event) => {
-          store.setTextInput(event.currentTarget.textContent ?? '')
+          store.setTextInput(getSearchFieldText(event.currentTarget))
         }}
       />
 
@@ -404,6 +426,12 @@ export const RemotePanel = observer(function RemotePanel({
                 setRowMenu(null)
               }
             }
+            if (eventType === 'tabContentOffsetChange') {
+              store.setContentOffsetLeft(
+                String(eventData.tabId ?? ''),
+                Number(eventData.offsetLeft)
+              )
+            }
             return { code: 0 }
           }}
         />
@@ -480,9 +508,11 @@ function getRemoteRowMenuItems(store: RemoteStore, tabIdClicked: string) {
 }
 
 export function RemoteTabCell({
-  data
+  data,
+  onEvent
 }: {
-  data?: RemoteTabItem & { matchText?: string }
+  data?: RemoteTabItem & { matchText?: string, contentOffsetLeft?: number }
+  onEvent?: (eventType: string, eventData: Record<string, unknown>) => unknown
 }) {
   if (!data) return null
   const statuses: TabItemStatus[] = [
@@ -515,7 +545,16 @@ export function RemoteTabCell({
         responsiveMode: 'container',
         isIconVisible: true,
         isCloseVisible: false,
-        isCloseEnabled: false
+        isCloseEnabled: false,
+        contentOffsetLeft: data.contentOffsetLeft
+      }}
+      onEvent={(eventType, eventData) => {
+        if (eventType === 'contentOffsetChange') {
+          onEvent?.('tabContentOffsetChange', {
+            tabId: data.id,
+            offsetLeft: eventData.offsetLeft
+          })
+        }
       }}
     />
   )

@@ -1,23 +1,31 @@
 import {
   useEffect,
   useRef,
-  useState
+  useState,
+  type ReactNode
 } from 'react'
 import { observer } from 'mobx-react-lite'
 import {
   FileIcon,
   FolderView,
-  MenuComp
+  MenuComp,
+  SegmentedControl
 } from '@wwf971/react-comp-misc'
 import {
   TabContextEdge,
   TabItem,
+  WindowSidebar,
   type TabItemStatus
 } from '@wwf971/tab-manage-frontend-common'
 import { PopupStore } from './PopupStore'
 import { type TabSearchItem } from './TabSearchCore'
 import { TabBringPanel } from './TabBringPanel'
 import { RemoteUploadPanel } from './remote/RemoteUploadPanel'
+import {
+  getSearchFieldText,
+  handleSearchFieldKeyDown,
+  handleSearchFieldPaste
+} from './searchFieldPlain'
 import './SearchPanel.css'
 
 const contextEdgeRowIdBefore = 'context-edge-before'
@@ -49,6 +57,19 @@ export const SearchPanel = observer(function SearchPanel({
   )
   const tabSelectedCount = search.visibleSelectedIds.length
   const isTabSelected = tabSelectedCount > 0
+  // The window view shows windows with matches at the left side and the
+  // selected window's matches at the right, like the snapshot detail.
+  const isWindowView = store.searchViewCurrent === 'window'
+  const windowSourceIdSelected = isWindowView ? store.searchWindowSourceIdEffective : null
+  const isContextVisible = isContextMode && contextSingle !== null &&
+    (!isWindowView || contextSingle.windowSourceId === windowSourceIdSelected)
+  // Tab rows of the current view: the context slice, the selected window's
+  // matches, or the flat match list.
+  const itemsVisible = isContextVisible && contextSingle
+    ? contextSingle.items
+    : isWindowView
+      ? search.items.filter((tab) => tab.windowSourceId === windowSourceIdSelected)
+      : search.items
   // Move/duplicate act relative to the current active tab, one tab at a time.
   const isRelativeActionDisabled = (
     isActionBusy ||
@@ -73,7 +94,6 @@ export const SearchPanel = observer(function SearchPanel({
   )
 
   const openTabRowMenu = (tabSourceId: number, mouseEvent: MouseEvent) => {
-    const itemsVisible = isContextMode && contextSingle ? contextSingle.items : search.items
     const tabItem = itemsVisible.find((tab) => tab.tabSourceId === tabSourceId)
     const rowRect = getTabRowEl(tabSourceId)?.getBoundingClientRect()
     if (!tabItem || !rowRect) return
@@ -109,12 +129,10 @@ export const SearchPanel = observer(function SearchPanel({
 
   // Tab row IDs in display order. Edge rows of the context view are excluded
   // so shift-range selection only covers real tabs.
-  const tabRowIdsOrder = (
-    isContextMode && contextSingle ? contextSingle.items : search.items
-  ).map((tab) => String(tab.tabSourceId))
+  const tabRowIdsOrder = itemsVisible.map((tab) => String(tab.tabSourceId))
 
   const setVisibleSelectedIds = (tabSourceIds: number[]) => {
-    if (isContextMode && contextSingle) {
+    if (isContextVisible && contextSingle) {
       search.setContextSelectedIds(contextSingle.windowSourceId, tabSourceIds)
     } else {
       search.setSelectedIds(tabSourceIds)
@@ -151,7 +169,10 @@ export const SearchPanel = observer(function SearchPanel({
       }
       const indexStart = Math.min(indexAnchor, indexCurrent)
       const indexEnd = Math.max(indexAnchor, indexCurrent)
+      // The range keeps the anchor-to-target direction, so the selection
+      // array stays in the order rows were selected.
       const rowIdsRange = tabRowIdsOrder.slice(indexStart, indexEnd + 1)
+      if (indexAnchor > indexCurrent) rowIdsRange.reverse()
       setVisibleSelectedIds(
         [...new Set([...rowIdsSelected, ...rowIdsRange])].map(Number)
       )
@@ -160,7 +181,7 @@ export const SearchPanel = observer(function SearchPanel({
     setVisibleSelectedIds([tabSourceId])
   }
 
-  const rows = isContextMode && contextSingle
+  const rows = isContextVisible && contextSingle
     ? [
       {
         id: contextEdgeRowIdBefore,
@@ -181,7 +202,8 @@ export const SearchPanel = observer(function SearchPanel({
         data: {
           tab: {
             ...tab,
-            matchText: search.textCommitted
+            matchText: search.textCommitted,
+            contentOffsetLeft: search.contentOffsetLeftById.get(tab.tabSourceId) ?? 0
           }
         }
       })),
@@ -197,12 +219,13 @@ export const SearchPanel = observer(function SearchPanel({
         }
       }
     ]
-    : search.items.map((tab) => ({
+    : itemsVisible.map((tab) => ({
       id: String(tab.tabSourceId),
       data: {
         tab: {
           ...tab,
-          matchText: search.textCommitted
+          matchText: search.textCommitted,
+          contentOffsetLeft: search.contentOffsetLeftById.get(tab.tabSourceId) ?? 0
         }
       }
     }))
@@ -218,13 +241,38 @@ export const SearchPanel = observer(function SearchPanel({
         spellCheck={false}
         role="textbox"
         data-placeholder="Search title or URL"
+        onPaste={(event) => {
+          handleSearchFieldPaste(event)
+          search.setTextInput(getSearchFieldText(event.currentTarget))
+        }}
+        onKeyDown={handleSearchFieldKeyDown}
         onInput={(event) => {
-          search.setTextInput(event.currentTarget.textContent ?? '')
+          search.setTextInput(getSearchFieldText(event.currentTarget))
         }}
       />
 
       <SearchControlButtonGroup
         store={store}
+        compLead={(
+          <SegmentedControl
+            data={{
+              valueSelected: store.searchViewCurrent,
+              segList: [
+                { value: 'list', labelText: 'List' },
+                { value: 'window', labelText: 'Windows' }
+              ]
+            }}
+            config={{
+              isDisabled: isActionBusy,
+              classNameTrack: 'tab-search-view-switch'
+            }}
+            onEvent={(eventType: string, eventData: Record<string, unknown>) => {
+              if (eventType === 'valueSelectedChange') {
+                store.setSearchViewCurrent(eventData.valueSelected)
+              }
+            }}
+          />
+        )}
         buttons={[
           {
             id: 'close',
@@ -239,7 +287,7 @@ export const SearchPanel = observer(function SearchPanel({
             isDisabled: isActionBusy || (!isContextMode && tabSelectedCount !== 1),
             onClick: () => {
               if (isContextMode) search.exitContextAll()
-              else void search.enterContext(search.selectedIds[0])
+              else void store.enterTabSearchContext(search.selectedIds[0])
             }
           },
           {
@@ -282,6 +330,29 @@ export const SearchPanel = observer(function SearchPanel({
       ) : null}
 
       <div className="tab-search-results" ref={resultsRef}>
+        {isWindowView ? (
+          <WindowSidebar
+            data={{
+              windows: store.searchWindowItems.map((windowItem) => {
+                const labelText = `Window ${windowItem.windowIndex + 1}`
+                return {
+                  windowSourceId: windowItem.windowSourceId,
+                  labelText,
+                  countText: String(windowItem.matchCount),
+                  titleText: `${labelText}, ${windowItem.matchCount} matched tab${windowItem.matchCount === 1 ? '' : 's'}`,
+                  isInContext: search.contextByWindowId.has(windowItem.windowSourceId)
+                }
+              }),
+              windowSourceIdSelected
+            }}
+            config={{ isBusy: isActionBusy, heightPx: 260 }}
+            onEvent={(eventType, eventData) => {
+              if (eventType === 'windowSourceIdSelectedChange') {
+                store.setSearchWindowSourceIdSelected(Number(eventData.windowSourceId))
+              }
+            }}
+          />
+        ) : null}
         <FolderView
           data={{
             columns: {
@@ -374,6 +445,12 @@ export const SearchPanel = observer(function SearchPanel({
             if (eventType === 'tabCloseAttempt') {
               store.runTabSearchAction('close', Number(eventData.tabSourceId))
             }
+            if (eventType === 'tabContentOffsetChange') {
+              search.setContentOffsetLeft(
+                Number(eventData.tabSourceId),
+                Number(eventData.offsetLeft)
+              )
+            }
             return { code: 0 }
           }}
         />
@@ -441,8 +518,9 @@ export const SearchPanel = observer(function SearchPanel({
                 void store.openTabBring({ pickSide: 'target', tabsSourceFixed })
               }
               if (item?.id === 'upload-selected-to-remote') {
+                // Tabs upload in the order they were selected, not in row order.
                 store.openRemoteUploadForTabs(
-                  search.visibleSelectedItems.map((tab) => ({
+                  search.visibleSelectedItemsSelectOrder.map((tab) => ({
                     tabSourceId: tab.tabSourceId,
                     title: tab.title,
                     url: tab.url
@@ -450,9 +528,6 @@ export const SearchPanel = observer(function SearchPanel({
                 )
               }
               if (item?.id === 'upload-window-to-remote') {
-                const itemsVisible = search.contextSingle
-                  ? search.contextSingle.items
-                  : search.items
                 const tabClicked = itemsVisible.find(
                   (tab) => tab.tabSourceId === tabRowMenu.tabSourceId
                 )
@@ -506,12 +581,12 @@ function getTabRowMenuItems(
   items.push(
     {
       id: 'bring-to-current',
-      label: 'Bring before/after current tab',
+      label: 'Bring it before/after current tab',
       isDisabled: isSelectionCurrentOnly
     },
     {
       id: 'bring-to-target',
-      label: 'Bring before/after a target tab'
+      label: 'Bring it before/after a target tab'
     },
     {
       id: 'upload-selected-to-remote',
@@ -531,7 +606,11 @@ export function SearchTabCell({
   data,
   onEvent
 }: {
-  data?: TabSearchItem & { matchText?: string, isCloseVisible?: boolean }
+  data?: TabSearchItem & {
+    matchText?: string
+    isCloseVisible?: boolean
+    contentOffsetLeft?: number
+  }
   onEvent?: (eventType: string, eventData: Record<string, unknown>) => unknown
 }) {
   if (!data) return null
@@ -579,11 +658,18 @@ export function SearchTabCell({
         responsiveMode: 'container',
         isIconVisible: true,
         isCloseVisible: data.isCloseVisible !== false,
-        isCloseEnabled: data.isCloseVisible !== false
+        isCloseEnabled: data.isCloseVisible !== false,
+        contentOffsetLeft: data.contentOffsetLeft
       }}
-      onEvent={(eventType) => {
+      onEvent={(eventType, eventData) => {
         if (eventType === 'closeAttempt') {
           onEvent?.('tabCloseAttempt', { tabSourceId: data.tabSourceId })
+        }
+        if (eventType === 'contentOffsetChange') {
+          onEvent?.('tabContentOffsetChange', {
+            tabSourceId: data.tabSourceId,
+            offsetLeft: eventData.offsetLeft
+          })
         }
       }}
     />
@@ -592,9 +678,12 @@ export function SearchTabCell({
 
 function SearchControlButtonGroup({
   store,
+  compLead,
   buttons
 }: {
   store: PopupStore
+  // Extra control rendered at the start of the track, e.g. the view switcher.
+  compLead?: ReactNode
   buttons: Array<{
     id: string
     labelText: string
@@ -637,6 +726,7 @@ function SearchControlButtonGroup({
       ref={viewportRef}
     >
       <div className="tab-search-control-track">
+        {compLead}
         {buttons.map((button) => (
           <button
             type="button"

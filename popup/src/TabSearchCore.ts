@@ -208,6 +208,8 @@ export class TabSearchCore {
   // One context view per window. The Search tab keeps at most one entry; a
   // snapshot detail can keep one entry for each of its windows.
   contextByWindowId = new Map<number, TabContextState>()
+  // Horizontal drag offset of each tab-item title/url track, keyed by tab id.
+  contentOffsetLeftById = new Map<number, number>()
 
   source: TabQuerySource
   getContextCountSide: () => number
@@ -273,11 +275,26 @@ export class TabSearchCore {
     return this.contextSingle ? this.contextSingle.selectedIds : this.selectedIds
   }
 
-  // Selected items of the visible view, in row order instead of click order.
+  // Selected items of the visible view, in row order instead of select order.
   get visibleSelectedItems() {
     const items = this.contextSingle ? this.contextSingle.items : this.items
     const tabSourceIdSet = new Set(this.visibleSelectedIds)
     return items.filter((tab) => tabSourceIdSet.has(tab.tabSourceId))
+  }
+
+  // Selected items of the visible view, in the order they were selected.
+  // visibleSelectedIds keeps select order: clicks append at the end, and a
+  // shift range keeps the anchor-to-target direction. Ordered operations,
+  // for example uploading tabs to remote, must use this getter.
+  get visibleSelectedItemsSelectOrder() {
+    const items = this.contextSingle ? this.contextSingle.items : this.items
+    const itemByTabSourceId = new Map(items.map((tab) => [tab.tabSourceId, tab]))
+    const itemsSelected: TabSearchItem[] = []
+    for (const tabSourceId of this.visibleSelectedIds) {
+      const item = itemByTabSourceId.get(tabSourceId)
+      if (item) itemsSelected.push(item)
+    }
+    return itemsSelected
   }
 
   get visibleSelectedFirst() {
@@ -298,6 +315,10 @@ export class TabSearchCore {
     // The context views belong to tabs chosen from the previous result list.
     if (this.isContextMode) this.exitContextAll()
     this.queueCommit()
+  }
+
+  setContentOffsetLeft(tabSourceId: number, offsetLeft: number) {
+    this.contentOffsetLeftById.set(tabSourceId, Math.max(0, offsetLeft))
   }
 
   queueCommit() {
