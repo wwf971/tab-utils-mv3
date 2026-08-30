@@ -4,6 +4,7 @@ import {
   ConfigPanel,
   MessageBar,
   NumValue,
+  SegmentedControl,
   TabsOnTop,
   TabsOnTopTab,
   TabsOnTopTabLabel,
@@ -31,6 +32,32 @@ const SearchWorkspaceControl = observer(function SearchWorkspaceControl({
   const store = value as PopupStore | null
   if (!store) return <div className="search-workspace-loading">Loading tab search...</div>
   return <SearchPanel store={store} />
+})
+
+const SearchWorkspaceModeControl = observer(function SearchWorkspaceModeControl({
+  value
+}: ConfigCustomControlProps) {
+  const store = value as PopupStore | null
+  if (!store) return null
+  return (
+    <div className="search-workspace-mode-control">
+      <SegmentedControl
+        data={{
+          valueSelected: store.searchWorkspaceMode,
+          segList: [
+            { value: 'search', labelText: 'Search' },
+            { value: 'all', labelText: 'All Windows' }
+          ]
+        }}
+        config={{ isDisabled: store.tabSearch.isBusy || store.isWindowsAllLoading }}
+        onEvent={(eventType: string, eventData: Record<string, unknown>) => {
+          if (eventType === 'valueSelectedChange') {
+            store.setSearchWorkspaceMode(eventData.valueSelected)
+          }
+        }}
+      />
+    </div>
+  )
 })
 
 const RemoteWorkspaceControl = observer(function RemoteWorkspaceControl({
@@ -744,6 +771,7 @@ const PopupConfigContent = observer(function PopupConfigContent({
   store: PopupStore
 }) {
   const settings = {
+    searchWorkspaceMode: store,
     searchWorkspace: store,
     remoteWorkspace: store,
     enable_move_new_tab_next_to_current: store.isMoveNewTabNextToCurrentEnabled,
@@ -773,6 +801,14 @@ const PopupConfigContent = observer(function PopupConfigContent({
         name: 'Search',
         type: 'subtab',
         children: [
+          {
+            id: 'searchWorkspaceMode',
+            label: 'Search panel mode',
+            type: 'custom',
+            compName: 'searchWorkspaceMode',
+            isFullWidth: true,
+            defaultValue: null
+          },
           {
             id: 'search_group',
             label: 'Search open tabs',
@@ -842,7 +878,7 @@ const PopupConfigContent = observer(function PopupConfigContent({
               {
                 id: 'search_view_default',
                 label: 'Default search view',
-                description: 'View of the search results when the popup opens: one flat list, or windows at the left side',
+                description: 'View of search results when the popup opens: one flat list or windows at the left side',
                 type: 'enum',
                 options: [
                   { value: 'list', labelText: 'List' },
@@ -1024,6 +1060,7 @@ const PopupConfigContent = observer(function PopupConfigContent({
       }
     ],
     getComp: (compName: string) => {
+      if (compName === 'searchWorkspaceMode') return SearchWorkspaceModeControl
       if (compName === 'searchWorkspace') return SearchWorkspaceControl
       if (compName === 'remoteWorkspace') return RemoteWorkspaceControl
       if (compName === 'badgeTabCount') return BadgeTabCountControl

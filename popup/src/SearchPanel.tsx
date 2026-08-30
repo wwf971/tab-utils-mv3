@@ -15,6 +15,7 @@ import {
   TabContextEdge,
   TabItem,
   WindowSidebar,
+  WindowTabView,
   type TabItemStatus
 } from '@wwf971/tab-manage-frontend-common'
 import { PopupStore } from './PopupStore'
@@ -41,6 +42,14 @@ interface TabRowMenuState {
   offsetY: number
 }
 
+// Right-click menu on one window of the window sidebar.
+interface WindowRowMenuState {
+  windowSourceId: number
+  posOpen: { x: number, y: number }
+  offsetX: number
+  offsetY: number
+}
+
 export const SearchPanel = observer(function SearchPanel({
   store
 }: {
@@ -48,6 +57,7 @@ export const SearchPanel = observer(function SearchPanel({
 }) {
   const resultsRef = useRef<HTMLDivElement>(null)
   const [tabRowMenu, setTabRowMenu] = useState<TabRowMenuState | null>(null)
+  const [windowRowMenu, setWindowRowMenu] = useState<WindowRowMenuState | null>(null)
   const search = store.tabSearch
   const contextSingle = search.contextSingle
   const isContextMode = search.isContextMode
@@ -60,6 +70,9 @@ export const SearchPanel = observer(function SearchPanel({
   // The window view shows windows with matches at the left side and the
   // selected window's matches at the right, like the snapshot detail.
   const isWindowView = store.searchViewCurrent === 'window'
+  // Full display is a top-level panel mode, separate from List/Windows search
+  // result views.
+  const isAllView = store.searchWorkspaceMode === 'all'
   const windowSourceIdSelected = isWindowView ? store.searchWindowSourceIdEffective : null
   const isContextVisible = isContextMode && contextSingle !== null &&
     (!isWindowView || contextSingle.windowSourceId === windowSourceIdSelected)
@@ -104,6 +117,29 @@ export const SearchPanel = observer(function SearchPanel({
       setTabRowMenu({
         tabSourceId,
         titleText: tabItem.title,
+        posOpen: { x: mouseEvent.clientX, y: mouseEvent.clientY },
+        offsetX: mouseEvent.clientX - rowRect.left,
+        offsetY: mouseEvent.clientY - rowRect.top
+      })
+    })
+  }
+
+  const getWindowRowEl = (windowSourceId: number) => (
+    resultsRef.current?.querySelector(`[data-window-id="${windowSourceId}"]`) as HTMLElement | null
+  )
+
+  // Right-clicking a sidebar window selects it and opens the window menu, the
+  // same way right-clicking a tab row selects that tab first.
+  const openWindowRowMenu = (windowSourceId: number, mouseEvent: MouseEvent) => {
+    mouseEvent.preventDefault()
+    if (isAllView) store.setWindowSourceIdSelectedAllView(windowSourceId)
+    else store.setSearchWindowSourceIdSelected(windowSourceId)
+    const rowRect = getWindowRowEl(windowSourceId)?.getBoundingClientRect()
+    if (!rowRect) return
+    setWindowRowMenu(null)
+    requestAnimationFrame(() => {
+      setWindowRowMenu({
+        windowSourceId,
         posOpen: { x: mouseEvent.clientX, y: mouseEvent.clientY },
         offsetX: mouseEvent.clientX - rowRect.left,
         offsetY: mouseEvent.clientY - rowRect.top
@@ -236,6 +272,9 @@ export const SearchPanel = observer(function SearchPanel({
     <div className="tab-search-panel">
       <div
         className={`tab-search-field ${search.textInput ? '' : 'tab-search-field-empty'}`}
+        // display:none instead of unmounting: the contentEditable field is
+        // uncontrolled, so unmounting would lose the entered search text.
+        style={{ display: isAllView ? 'none' : undefined }}
         contentEditable={!isActionBusy}
         suppressContentEditableWarning
         spellCheck={false}
@@ -251,6 +290,7 @@ export const SearchPanel = observer(function SearchPanel({
         }}
       />
 
+      {!isAllView ? (
       <SearchControlButtonGroup
         store={store}
         compLead={(
@@ -316,9 +356,12 @@ export const SearchPanel = observer(function SearchPanel({
           }
         ]}
       />
+      ) : null}
 
       <div className={`tab-search-message tab-search-message-${search.messageStatus}`}>
-        {search.messageText || 'Enter text to search open tabs'}
+        {search.messageText || (isAllView
+          ? getWindowsAllSummaryText(store.windowsAll)
+          : 'Enter text to search open tabs')}
       </div>
 
       {store.tabBring ? (
@@ -329,6 +372,48 @@ export const SearchPanel = observer(function SearchPanel({
         <RemoteUploadPanel store={store} key={store.remote.uploadPanelOpenCount} />
       ) : null}
 
+      {isAllView ? (
+        <div className="tab-search-results" ref={resultsRef}>
+          <WindowTabView
+            data={{
+              windows: store.windowsAll,
+              windowSourceIdSelected: store.windowSourceIdSelectedAllView,
+              tabIdsSelected: store.tabIdsSelectedAllView
+            }}
+            config={{
+              isBusy: isActionBusy,
+              bodyHeight: 260,
+              sidebarHeightPx: 260,
+              colWidthById: store.getFolderColWidthById('search-all')
+            }}
+            onEvent={(eventType, eventData) => {
+              if (eventType === 'windowSourceIdSelectedChange') {
+                store.setWindowSourceIdSelectedAllView(Number(eventData.windowSourceId))
+              }
+              if (eventType === 'windowContextMenu') {
+                openWindowRowMenu(
+                  Number(eventData.windowSourceId),
+                  eventData.event as MouseEvent
+                )
+              }
+              if (eventType === 'tabIdsSelectedChange') {
+                store.setTabIdsSelectedAllView(
+                  [...(eventData.tabIds as string[] ?? [])].map(String)
+                )
+              }
+              if (eventType === 'tabRowDoubleClick') {
+                void store.runTabSearchAction('activate', Number(eventData.tabSourceId))
+              }
+              if (eventType === 'colWidthByIdChange') {
+                store.setFolderColWidthById(
+                  'search-all',
+                  eventData.colWidthById as Record<string, number>
+                )
+              }
+            }}
+          />
+        </div>
+      ) : (
       <div className="tab-search-results" ref={resultsRef}>
         {isWindowView ? (
           <WindowSidebar
@@ -349,6 +434,12 @@ export const SearchPanel = observer(function SearchPanel({
             onEvent={(eventType, eventData) => {
               if (eventType === 'windowSourceIdSelectedChange') {
                 store.setSearchWindowSourceIdSelected(Number(eventData.windowSourceId))
+              }
+              if (eventType === 'windowContextMenu') {
+                openWindowRowMenu(
+                  Number(eventData.windowSourceId),
+                  eventData.event as MouseEvent
+                )
               }
             }}
           />
@@ -455,6 +546,7 @@ export const SearchPanel = observer(function SearchPanel({
           }}
         />
       </div>
+      )}
       {!isContextMode && search.isMore ? (
         <button
           type="button"
@@ -540,9 +632,56 @@ export const SearchPanel = observer(function SearchPanel({
           }}
         />
       ) : null}
+
+      {windowRowMenu ? (
+        <MenuComp
+          data={{
+            items: [
+              { id: 'copy-window-tabs', label: 'Copy tabs as "url | title" lines' },
+              { id: 'close-window', label: 'Close window' }
+            ]
+          }}
+          config={{
+            isOpen: true,
+            posOpen: windowRowMenu.posOpen,
+            isBackdropScrollPassThrough: true,
+            anchor: {
+              getRect: () => (
+                getWindowRowEl(windowRowMenu.windowSourceId)?.getBoundingClientRect() ?? null
+              ),
+              getTargetEl: () => getWindowRowEl(windowRowMenu.windowSourceId),
+              getVisibilityRoot: () => (
+                resultsRef.current?.querySelector('.window-sidebar') ?? null
+              ),
+              offsetX: windowRowMenu.offsetX,
+              offsetY: windowRowMenu.offsetY
+            }
+          }}
+          onEvent={(eventType: string, eventData: Record<string, unknown>) => {
+            if (eventType === 'closeRequest') {
+              setWindowRowMenu(null)
+            }
+            if (eventType === 'itemClick') {
+              const item = eventData.item as { id?: string } | undefined
+              if (item?.id === 'copy-window-tabs') {
+                void store.copyWindowTabsText(windowRowMenu.windowSourceId)
+              }
+              if (item?.id === 'close-window') {
+                void store.closeBrowserWindow(windowRowMenu.windowSourceId)
+              }
+              setWindowRowMenu(null)
+            }
+          }}
+        />
+      ) : null}
     </div>
   )
 })
+
+function getWindowsAllSummaryText(windows: Array<{ tabs: unknown[] }>) {
+  const tabCount = windows.reduce((count, windowItem) => count + windowItem.tabs.length, 0)
+  return `${windows.length} window${windows.length === 1 ? '' : 's'}, ${tabCount} tab${tabCount === 1 ? '' : 's'}`
+}
 
 // Menu items depend on the selection: the "before/after it" pair needs one
 // selected tab (the right-clicked one); the "before/after current tab" and

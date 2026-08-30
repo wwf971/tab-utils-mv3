@@ -340,6 +340,15 @@
     }
   }
 
+  api.runBrowserWindowAction = async ({ operation, windowSourceId }) => {
+    if (!Number.isInteger(windowSourceId)) throw new Error('A valid window ID is required')
+    if (operation === 'close') {
+      await chrome.windows.remove(windowSourceId)
+      return { windowSourceId }
+    }
+    throw new Error('Unsupported window action')
+  }
+
   api.subscribeBrowserChange = (listener) => {
     changeSubscribers.add(listener)
     return () => changeSubscribers.delete(listener)

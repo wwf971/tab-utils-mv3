@@ -3,7 +3,8 @@ import type {
   SnapshotDetailData,
   SnapshotListItem,
   SnapshotMessageState,
-  SnapshotViewSearchData
+  SnapshotViewSearchData,
+  SnapshotWindowData
 } from '@wwf971/tab-manage-frontend-common'
 import {
   TabSearchCore,
@@ -75,8 +76,7 @@ interface RecoveryData {
 export const tabContextCountSideDefault = 10
 export const recoveryEventColCountDefault = 2
 
-// View modes of the search result area. A choice instead of a boolean, since
-// more views may be added later.
+export type SearchWorkspaceMode = 'search' | 'all'
 export type TabSearchViewMode = 'list' | 'window'
 export const tabSearchViewModeDefault: TabSearchViewMode = 'list'
 
@@ -158,14 +158,21 @@ export class PopupStore {
   // Configured tab count on each side of the center tab. Loading more also
   // extends the loaded range by this count.
   tabContextCountSide = tabContextCountSideDefault
-  // Current view of the search result area: 'list' shows one flat match list,
-  // 'window' shows windows at the left side and the selected window's matches
-  // at the right, like the snapshot detail.
+  // Top-level panel mode. Full display is separate from search-result views.
+  searchWorkspaceMode: SearchWorkspaceMode = 'search'
+  // Inside search mode, results can be one list or grouped by window.
   searchViewCurrent: TabSearchViewMode = tabSearchViewModeDefault
   // Configured default view, applied when the popup opens.
   searchViewDefault: TabSearchViewMode = tabSearchViewModeDefault
   // Window chosen in the window-view sidebar of the Search tab.
   searchWindowSourceIdSelected: number | null = null
+  // Complete live windows/tabs tree shown by the 'all' view of the Search tab.
+  windowsAll: SnapshotWindowData[] = []
+  isWindowsAllLoading = false
+  windowsAllRefreshTimeoutId: ReturnType<typeof setTimeout> | null = null
+  // Window and tab rows chosen in the 'all' view.
+  windowSourceIdSelectedAllView: number | null = null
+  tabIdsSelectedAllView: string[] = []
   // Search over the live browser state, shown in the Search tab.
   tabSearch = new TabSearchCore({
     source: createLiveTabQuerySource(),
@@ -293,6 +300,7 @@ export class PopupStore {
       this.tabSearch.queueSearchRefresh()
       this.tabSearch.queueContextRefresh()
       this.tabBring?.search.queueSearchRefresh()
+      if (this.searchWorkspaceMode === 'all') this.queueWindowsAllRefresh()
     }
     return false
   }
@@ -320,6 +328,10 @@ export class PopupStore {
     if (this.recoveryRefreshTimeoutId !== null) {
       clearTimeout(this.recoveryRefreshTimeoutId)
       this.recoveryRefreshTimeoutId = null
+    }
+    if (this.windowsAllRefreshTimeoutId !== null) {
+      clearTimeout(this.windowsAllRefreshTimeoutId)
+      this.windowsAllRefreshTimeoutId = null
     }
     this.tabSearch.dispose()
     for (const searchCore of this.snapshotSearchById.values()) {
@@ -411,6 +423,145 @@ export class PopupStore {
     const context = this.tabSearch.contextSingle
     if (this.searchViewCurrent === 'window' && context) {
       this.searchWindowSourceIdSelected = context.windowSourceId
+    }
+  }
+
+  setSearchWorkspaceMode(mode: unknown) {
+    this.searchWorkspaceMode = mode === 'all' ? 'all' : 'search'
+    // Entering full display selects the window that currently holds the
+    // focused tab, so the sidebar starts on the window the user was in.
+    if (this.searchWorkspaceMode === 'all') {
+      void this.loadWindowsAll({ isSelectFocusedWindow: true })
+    }
+  }
+
+  queueWindowsAllRefresh() {
+    if (this.windowsAllRefreshTimeoutId !== null) return
+    this.windowsAllRefreshTimeoutId = setTimeout(() => {
+      this.windowsAllRefreshTimeoutId = null
+      if (this.isWindowsAllLoading) {
+        this.queueWindowsAllRefresh()
+        return
+      }
+      void this.loadWindowsAll()
+    }, 150)
+  }
+
+  // Load the complete live browser state for the 'all' view. Loading is
+  // silent; only a failure lands in the search message line.
+  async loadWindowsAll(options: { isSelectFocusedWindow?: boolean } = {}) {
+    if (this.isWindowsAllLoading) return false
+    this.isWindowsAllLoading = true
+    try {
+      // Opening the popup clears chrome.windows focused flags, so isFocused on
+      // the live tree is often false for every window. lastFocusedWindow still
+      // points at the browser window the user was in before the popup opened.
+      const [stateResponse, tabsLastFocused] = await Promise.all([
+        chrome.runtime.sendMessage({ action: 'browserStateGet' }),
+        chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => [])
+      ])
+      if (!stateResponse?.success) {
+        throw new Error(stateResponse?.error ?? 'Browser state loading failed')
+      }
+      const windowSourceIdLastFocused = Number(tabsLastFocused[0]?.windowId)
+      runInAction(() => {
+        this.windowsAll = (stateResponse.result?.windows ?? []) as SnapshotWindowData[]
+        const tabIdSet = new Set(this.windowsAll.flatMap((windowItem) => (
+          windowItem.tabs.map((tab) => String(tab.tabSourceId))
+        )))
+        this.tabIdsSelectedAllView = this.tabIdsSelectedAllView.filter(
+          (tabId) => tabIdSet.has(tabId)
+        )
+        const windowFocused = this.windowsAll.find((windowItem) => windowItem.isFocused)
+        const windowFocusedSourceId = (
+          Number.isInteger(windowSourceIdLastFocused) &&
+          this.windowsAll.some(
+            (windowItem) => windowItem.windowSourceId === windowSourceIdLastFocused
+          )
+            ? windowSourceIdLastFocused
+            : windowFocused?.windowSourceId
+              ?? this.windowsAll[0]?.windowSourceId
+              ?? null
+        )
+        if (options.isSelectFocusedWindow === true) {
+          this.windowSourceIdSelectedAllView = windowFocusedSourceId
+          this.tabIdsSelectedAllView = []
+          return
+        }
+        const isSelectedPresent = this.windowsAll.some(
+          (windowItem) => windowItem.windowSourceId === this.windowSourceIdSelectedAllView
+        )
+        if (!isSelectedPresent) {
+          this.windowSourceIdSelectedAllView = windowFocusedSourceId
+          this.tabIdsSelectedAllView = []
+        }
+      })
+      return true
+    } catch (error) {
+      runInAction(() => {
+        this.tabSearch.setMessage('error', getErrorText(error))
+      })
+      return false
+    } finally {
+      runInAction(() => {
+        this.isWindowsAllLoading = false
+      })
+    }
+  }
+
+  setWindowSourceIdSelectedAllView(windowSourceId: number) {
+    if (this.windowSourceIdSelectedAllView === windowSourceId) return
+    this.windowSourceIdSelectedAllView = windowSourceId
+    // Same rule as the snapshot window sidebar: a window switch drops the tab
+    // selection, so the selection never refers to tabs that are not visible.
+    this.tabIdsSelectedAllView = []
+  }
+
+  setTabIdsSelectedAllView(tabIds: string[]) {
+    this.tabIdsSelectedAllView = [...tabIds].map(String)
+  }
+
+  // Copy every tab of one window into the clipboard as '{url} | {title}'
+  // lines. The window is read from the live state at copy time, so the copied
+  // text reflects the current tabs even if the shown view is behind.
+  async copyWindowTabsText(windowSourceId: number) {
+    try {
+      const response = await chrome.runtime.sendMessage({ action: 'browserStateGet' })
+      if (!response?.success) throw new Error(response?.error ?? 'Browser state loading failed')
+      const windows = (response.result?.windows ?? []) as SnapshotWindowData[]
+      const windowItem = windows.find((item) => item.windowSourceId === windowSourceId)
+      if (!windowItem) throw new Error('The window no longer exists')
+      const text = windowItem.tabs.map((tab) => `${tab.url} | ${tab.title}`).join('\n')
+      await navigator.clipboard.writeText(text)
+      this.tabSearch.setMessage(
+        'success',
+        `Copied ${windowItem.tabs.length} tab${windowItem.tabs.length === 1 ? '' : 's'} of Window ${windowItem.windowIndex + 1}`
+      )
+      return true
+    } catch (error) {
+      this.tabSearch.setMessage('error', getErrorText(error))
+      return false
+    }
+  }
+
+  // Close one entire window with all of its tabs.
+  async closeBrowserWindow(windowSourceId: number) {
+    this.tabSearch.setMessage('loading', 'Closing window...')
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'browserWindowAction',
+        operation: 'close',
+        windowSourceId
+      })
+      if (!response?.success) throw new Error(response?.error ?? 'Window closing failed')
+      this.tabSearch.setMessage('success', 'Window closed')
+      if (this.searchWorkspaceMode === 'all') this.queueWindowsAllRefresh()
+      if (this.tabSearch.isContextMode) await this.tabSearch.refreshContexts()
+      if (this.tabSearch.textCommitted) await this.tabSearch.search(true)
+      return true
+    } catch (error) {
+      this.tabSearch.setMessage('error', getErrorText(error))
+      return false
     }
   }
 
@@ -1212,7 +1363,8 @@ function getErrorText(error: unknown) {
 }
 
 function getSearchViewModeValid(value: unknown): TabSearchViewMode {
-  return value === 'window' ? 'window' : tabSearchViewModeDefault
+  if (value === 'window') return value
+  return tabSearchViewModeDefault
 }
 
 function getTabContextCountSideValid(value: unknown) {

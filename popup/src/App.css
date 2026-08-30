@@ -54,6 +54,13 @@
   background: #ffffff;
 }
 
+.search-workspace-mode-control {
+  display: flex;
+  min-width: 0;
+  padding-bottom: 2px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
 .badge-count-control {
   display: inline-flex;
   align-items: stretch;

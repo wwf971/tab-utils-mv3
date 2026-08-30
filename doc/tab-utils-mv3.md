@@ -10,7 +10,7 @@ Tab Utils is a Chrome and Firefox extension for tab behavior, tab counts, snapsh
 - A saved tab is a durable user record with its own stable identity. It is not a live tab object or a snapshot.
 - A browser run is one browser lifetime. Browser-provided window, tab, and group IDs are meaningful only inside that run.
 
-The browser is the ultimate truth for what is open now. The background context is the single extension-facing source of truth for live state and durable recovery data.
+The browser itself is the ultimate truth for what is open now. The background context is the single extension-facing source of truth for live state and durable recovery data.
 
 ```text
 browser tab and window events
@@ -27,7 +27,8 @@ Frontend panels do not listen to browser tab and window events directly. The bac
 
 A background module and its listeners must be registered once. Chrome packages declare only `background.js` as a service worker, which imports the snapshot modules. Firefox packages declare only the ordered background script list. The build removes the other browser's background declaration. Duplicate background contexts would have independent storage queues and could overwrite events recorded during the same burst.
 
-The manifest `version` must be raised for every Firefox deployment. Firefox caches the parsed manifest keyed by extension ID and version, so installing a new package with an unchanged version keeps the old cached background script list; a script file newly added to that list is then never loaded, and every function it defines is missing at runtime.
+
+A temporary load in `about:debugging` is not a permanent install. Release Firefox keeps only a Mozilla-signed `.xpi`. For gecko id, required manifest fields, icon rules, and the unlisted signing steps, refer to [Publishing a permanent Firefox add-on](./publish_firefox.md).
 
 A background change notice is an invalidation signal, not the changed data itself. Each open panel debounces notices and re-fetches from the background. This keeps the background as the source of truth and combines event bursts into fewer reads.
 
@@ -49,22 +50,26 @@ background starts
 
 Search and save utilities read this maintained state. They do not each scan the browser or maintain another event model.
 
-For tracker lifecycle, event sharing, selected tabs, and APIs, refer to [Live browser state](./browser_state.md).
+For tracker lifecycle, event sharing, selected tabs, and APIs, refer to `./browser_state.md`.
 
-For result selection, the nearby-tabs context view, and the bring-tabs operation of the popup search panel, refer to [Tab operations in the popup](./tab_ops.md).
+For result selection, the nearby-tabs context view, and the bring-tabs operation of the popup search panel, refer to `./tab_ops.md`.
 
-For the common window, tab, and group format, refer to [Browser state data](./browser_state_data.md).
+For the common window, tab, and group format, refer to `./browser_state_data.md`.
 
 ### Recovery
 
 A snapshot is a complete checkpoint of windows and tabs. Events record later changes. Recovery can either restore one selected snapshot directly, or replay events after the newest snapshot and restore the calculated state after user confirmation.
 
-For snapshot formats and event storage, refer to [Browser snapshots and event storage](./snapshot.md).
+For snapshot formats and event storage, refer to `./snapshot.md`.
 
-For recovery modes, replay rules, tab ordering, restoration batching, and Firefox details, refer to [Snapshot recovery](./snapshot_recover.md).
+For recovery modes, replay rules, tab ordering, restoration batching, and Firefox details, refer to `./snapshot_recover.md`.
 
 For the Firefox freeze investigation and the designs that keep background load bounded, refer to [Firefox freeze and crash notes](./issue_firefox_crash.md).
 
-### Firefox and the tab-count badge
+### Firefox Deployment
+
+The manifest `version` must be raised for every Firefox deployment. Firefox caches the parsed manifest keyed by extension ID and version, so installing a new package with an unchanged version keeps the old cached background script list; a script file newly added to that list is then never loaded, and every function it defines is missing at runtime.
 
 If on Firefox the browser gets stuck after a while, consider turning off the tab number display feature. The possible cause: when both the current-window count and the total count are enabled, a background timer keeps running to switch the badge on the extension icon between the two numbers, and each switch re-queries windows and tabs. The timer runs only while both counts are enabled; displaying a single count updates the badge from browser events without any timer.
+
+Only signed extension can be loaded permanently on firefox. Refer to `./publish_firefox.md`.

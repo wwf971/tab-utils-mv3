@@ -10,7 +10,8 @@
         "contextMenus",
         "alarms",
         "tabGroups",
-        "unlimitedStorage"
+        "unlimitedStorage",
+        "clipboardWrite"
     ],
     "action": {
         "default_popup": "popup/build/index.html",

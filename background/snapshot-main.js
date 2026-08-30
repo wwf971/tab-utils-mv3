@@ -137,6 +137,12 @@
         result: await api.runBrowserTabAction(message)
       }
     }
+    if (message.action === 'browserWindowAction') {
+      return {
+        success: true,
+        result: await api.runBrowserWindowAction(message)
+      }
+    }
     return null
   }
 
