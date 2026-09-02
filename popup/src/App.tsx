@@ -12,14 +12,14 @@ import {
 } from '@wwf971/react-comp-misc'
 import {
   SnapshotList,
-  SnapshotView,
-  type SnapshotDetailData
+  SnapshotView
 } from '@wwf971/tab-manage-frontend-common'
 import {
   PopupStore,
   type SnapshotMaintenance
 } from './PopupStore'
 import { SearchPanel } from './SearchPanel'
+import { RecoveryPanel } from './RecoveryPanel'
 import { RemotePanel } from './remote/RemotePanel'
 import './App.css'
 
@@ -128,160 +128,6 @@ function SnapshotListTabLabel({
   )
 }
 
-const RecoveryPanel = observer(function RecoveryPanel({ store }: { store: PopupStore }) {
-  const snapshot = store.recoverySnapshot
-  const calculatedSnapshot = store.recoveryCalculatedSnapshot
-  const isBusy = store.isSnapshotBusy
-
-  return (
-    <div className="recovery-panel">
-      <div className="recovery-action-row">
-        <button
-          type="button"
-          className="recovery-button"
-          disabled={isBusy}
-          onClick={() => store.loadRecoverySource()}
-        >
-          Refresh source
-        </button>
-        <button
-          type="button"
-          className="recovery-button recovery-button-primary"
-          disabled={isBusy || !snapshot || store.recoveryEventSequenceSelected === null}
-          onClick={() => store.replayRecovery(store.recoveryEventSequenceSelected)}
-        >
-          Replay to selected step
-        </button>
-        <button
-          type="button"
-          className="recovery-button recovery-button-primary"
-          disabled={isBusy || !snapshot}
-          onClick={() => store.replayRecovery()}
-        >
-          Replay to last step
-        </button>
-      </div>
-
-      <div className="recovery-source-grid">
-        <div className="recovery-section">
-          <div className="recovery-section-title">Last snapshot</div>
-          {snapshot ? (
-            <SnapshotOverview snapshot={snapshot} />
-          ) : (
-            <div className="recovery-empty">No complete snapshot is available.</div>
-          )}
-        </div>
-        <div className="recovery-section">
-          <div className="recovery-section-title">
-            Events after snapshot
-            <span className="recovery-count">{store.recoveryEvents.length}</span>
-            {store.recoveryEventSequenceSelected !== null ? (
-              <span className="recovery-count">
-                Selected {store.recoveryEventSequenceSelected}
-              </span>
-            ) : null}
-            <div className="recovery-event-column-control">
-              <span>Columns</span>
-              <NumValue
-                data={{ value: store.recoveryEventColCount }}
-                config={{
-                  min: 1,
-                  max: 8,
-                  step: 1,
-                  isDisabled: isBusy
-                }}
-                onEvent={(eventType, eventData) => {
-                  if (eventType === 'valueChangeAttempt') {
-                    void store.setRecoveryEventColCount(Number(eventData.value))
-                  }
-                }}
-              />
-            </div>
-          </div>
-          <div
-            className="recovery-event-list"
-            style={{
-              gridTemplateColumns: `repeat(${store.recoveryEventColCount}, minmax(0, 1fr))`
-            }}
-          >
-            {store.recoveryEvents.length > 0 ? store.recoveryEvents.map((eventItem) => (
-              <button
-                type="button"
-                className={`recovery-event-row ${
-                  store.recoveryEventSequenceSelected === eventItem.eventSequence
-                    ? 'recovery-event-row-selected'
-                    : ''
-                }`}
-                key={eventItem.eventId ?? eventItem.eventSequence}
-                aria-pressed={store.recoveryEventSequenceSelected === eventItem.eventSequence}
-                title={[
-                  eventItem.eventSequence,
-                  formatEventType(eventItem.eventType),
-                  eventItem.eventAtText ?? ''
-                ].filter((part) => String(part).length > 0).join(' · ')}
-                disabled={isBusy}
-                onClick={() => store.setRecoveryEventSequenceSelected(eventItem.eventSequence)}
-              >
-                <span className="recovery-event-sequence">{eventItem.eventSequence}</span>
-                <span className="recovery-event-type">{formatEventType(eventItem.eventType)}</span>
-                <span className="recovery-event-time">{eventItem.eventAtText ?? ''}</span>
-              </button>
-            )) : (
-              <div className="recovery-empty">No later events. Replay will keep the snapshot unchanged.</div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="recovery-section">
-        <div className="recovery-section-title">Replay messages</div>
-        <div className="recovery-message-list">
-          {store.recoveryMessages.length > 0 ? store.recoveryMessages.map((message) => (
-            <div
-              className={`recovery-message-row recovery-message-${message.level}`}
-              key={message.messageId}
-            >
-              <span className="recovery-message-level">{message.level}</span>
-              <span>{message.text}</span>
-            </div>
-          )) : (
-            <div className="recovery-empty">Replay has no warnings or errors.</div>
-          )}
-        </div>
-      </div>
-
-      <div className="recovery-section recovery-result-section">
-        <div className="recovery-section-title">Calculated snapshot</div>
-        {calculatedSnapshot ? (
-          <SnapshotOverview snapshot={calculatedSnapshot} />
-        ) : (
-          <div className="recovery-empty">Replay recorded events to calculate a state to restore.</div>
-        )}
-        <div className="recovery-confirm-row">
-          <button
-            type="button"
-            className="recovery-button recovery-button-primary"
-            disabled={isBusy || !calculatedSnapshot || store.recoveryPhase === 'restored'}
-            onClick={() => store.restoreRecovery()}
-          >
-            Confirm and restore
-          </button>
-          <label className="snapshot-restore-mode">
-            <input
-              type="checkbox"
-              className="snapshot-restore-mode-checkbox"
-              checked={store.isBatchRestore}
-              disabled={isBusy}
-              onChange={(event) => store.setBatchRestore(event.currentTarget.checked)}
-            />
-            <span>Restore windows/tabs in a batch</span>
-          </label>
-        </div>
-      </div>
-    </div>
-  )
-})
-
 const RecoveryWorkspaceControl = observer(function RecoveryWorkspaceControl({
   value
 }: ConfigCustomControlProps) {
@@ -289,29 +135,6 @@ const RecoveryWorkspaceControl = observer(function RecoveryWorkspaceControl({
   if (!store) return <div className="recovery-empty">Loading recovery data...</div>
   return <RecoveryPanel store={store} />
 })
-
-function SnapshotOverview({ snapshot }: { snapshot: SnapshotDetailData }) {
-  return (
-    <div className="recovery-overview">
-      <div className="recovery-overview-summary">
-        <span>{snapshot.snapshotGenerateAtText}</span>
-        <span>{snapshot.windows.length} windows</span>
-        <span>{snapshot.windows.reduce((count, windowItem) => count + windowItem.tabs.length, 0)} tabs</span>
-      </div>
-      <div className="recovery-window-list">
-        {snapshot.windows.map((windowItem, windowIndex) => (
-          <div className="recovery-window-row" key={windowItem.windowSourceId}>
-            <span>Window {windowIndex + 1}</span>
-            <span>{windowItem.tabs.length} tabs</span>
-            <span className="recovery-window-preview">
-              {windowItem.tabs.slice(0, 2).map((tab) => tab.title || tab.url || 'Untitled').join(', ')}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
 
 function formatDuration(minuteValue: number | null) {
   if (minuteValue === null) return 'Forever'
@@ -326,10 +149,6 @@ function formatDuration(minuteValue: number | null) {
     parts.push(`${minute} ${minute === 1 ? 'minute' : 'minutes'}`)
   }
   return parts.join(' ')
-}
-
-function formatEventType(eventType: string) {
-  return eventType.replace(/([a-z])([A-Z])/g, '$1 $2')
 }
 
 function parseDuration(text: string) {
@@ -1121,7 +940,11 @@ const PopupConfigContent = observer(function PopupConfigContent({
 
 const PopupPanel = observer(function PopupPanel({ store }: { store: PopupStore }) {
   return (
-    <div className="popup-config-panel">
+    <div
+      className={`popup-config-panel${
+        store.configSubtabId === 'restore_subtab' ? ' popup-config-panel-restore' : ''
+      }`}
+    >
       <div className="popup-global-message">
         <MessageBar
           data={{

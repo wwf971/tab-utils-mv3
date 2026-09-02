@@ -37,6 +37,7 @@ Chrome and Firefox use the same popup CSS. Browser-specific manifest or JavaScri
 - Use `box-sizing: border-box` so borders and padding stay inside the specified size.
 - Keep the popup within browser extension-popup limits. Oversized dimensions can be restricted by the browser.
 - Put overflow scrolling on an inner content panel. Keep the document itself fixed to avoid window-size changes between views.
+- A view whose inner areas scroll must not also overflow the popup. Two nested vertical scrollbars look broken. The Restore tab, for example, measures its available height once when it mounts and gives the remaining height to its events table, so the popup-level panel never scrolls there (refer to [Snapshot recovery](./snapshot_recover.md#panel-height)).
 
 ## Verification
 

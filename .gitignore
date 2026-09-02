@@ -35,7 +35,7 @@ issue_*.md
 # real config, refer to config-two-layer
 config.0.*
 
-ai-dev.md
+*ai-dev*
 
 *.pyc
 __pycache__/

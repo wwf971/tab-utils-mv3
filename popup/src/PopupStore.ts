@@ -65,12 +65,38 @@ export interface RecoveryMessage {
   eventType: string | null
 }
 
+// The recovery source snapshot is the complete stored snapshot object, so it
+// also carries the event cutoff used by target-based replay.
+export interface RecoverySnapshotData extends SnapshotDetailData {
+  eventSequenceCutoff?: number
+}
+
 interface RecoveryData {
-  snapshot: SnapshotDetailData
+  snapshot: RecoverySnapshotData
   events: RecoveryEvent[]
   stateRecovered?: SnapshotDetailData
   messages: RecoveryMessage[]
   eventSequenceLast: number
+}
+
+// Target-based replay: replay to {offsetStep} step of the (last) {indexNth}-th
+// {eventType} event. The two simple modes, replay to last step and replay to
+// one selected step, do not use this target; they pass their end sequence to
+// replayRecovery directly.
+export type RecoveryReplayMode = 'last' | 'selected' | 'target'
+
+export interface RecoveryReplayTarget {
+  eventType: string
+  isFromLast: boolean
+  indexNth: number
+  offsetStep: number
+}
+
+export const recoveryReplayTargetDefault: RecoveryReplayTarget = {
+  eventType: 'windowRemoved',
+  isFromLast: true,
+  indexNth: 1,
+  offsetStep: -1
 }
 
 export const tabContextCountSideDefault = 10
@@ -145,7 +171,7 @@ export class PopupStore {
   folderColWidthByIdByViewId = new Map<string, Record<string, number>>([
     ['snapshot-list', { ...snapshotListColWidthDefault }]
   ])
-  recoverySnapshot: SnapshotDetailData | null = null
+  recoverySnapshot: RecoverySnapshotData | null = null
   recoveryEvents: RecoveryEvent[] = []
   recoveryCalculatedSnapshot: SnapshotDetailData | null = null
   recoveryMessages: RecoveryMessage[] = []
@@ -153,8 +179,17 @@ export class PopupStore {
   recoveryEventSequenceSelected: number | null = null
   recoveryEventColCount = recoveryEventColCountDefault
   recoveryPhase: 'empty' | 'source' | 'replayed' | 'restored' = 'empty'
+  // Which end-event rule the first-line radios currently use.
+  recoveryReplayMode: RecoveryReplayMode = 'last'
+  // Parameters of target-based replay; refer to RecoveryReplayTarget.
+  recoveryReplayTarget: RecoveryReplayTarget = { ...recoveryReplayTargetDefault }
+  // Config option: replay immediately after the user edits a target parameter.
+  isRecoveryReplayRealtime = true
+  // The events table can be opened enlarged in an in-popup overlay.
+  isRecoveryEventPopupOpen = false
   isRecoveryUpdateListening = false
   recoveryRefreshTimeoutId: ReturnType<typeof setTimeout> | null = null
+  recoveryTargetReplayTimeoutId: ReturnType<typeof setTimeout> | null = null
   // Configured tab count on each side of the center tab. Loading more also
   // extends the loaded range by this count.
   tabContextCountSide = tabContextCountSideDefault
@@ -211,7 +246,8 @@ export class PopupStore {
           'enable_badge_show_total_tab_count',
           'search_context_tab_count_side',
           'search_view_default',
-          'recovery_event_column_count'
+          'recovery_event_column_count',
+          'enable_recovery_replay_realtime'
         ]),
         chrome.runtime.sendMessage({ action: 'snapshotGetState' })
       ])
@@ -226,6 +262,8 @@ export class PopupStore {
         this.recoveryEventColCount = getRecoveryEventColCountValid(
           settingsResult.recovery_event_column_count
         )
+        this.isRecoveryReplayRealtime =
+          settingsResult.enable_recovery_replay_realtime ?? true
         this.badgeTabCounts = []
         if (settingsResult.enable_badge_show_current_window_tab_count ?? true) {
           this.badgeTabCounts.push('currentWindow')
@@ -328,6 +366,10 @@ export class PopupStore {
     if (this.recoveryRefreshTimeoutId !== null) {
       clearTimeout(this.recoveryRefreshTimeoutId)
       this.recoveryRefreshTimeoutId = null
+    }
+    if (this.recoveryTargetReplayTimeoutId !== null) {
+      clearTimeout(this.recoveryTargetReplayTimeoutId)
+      this.recoveryTargetReplayTimeoutId = null
     }
     if (this.windowsAllRefreshTimeoutId !== null) {
       clearTimeout(this.windowsAllRefreshTimeoutId)
@@ -729,6 +771,15 @@ export class PopupStore {
 
   setRecoveryEventSequenceSelected(eventSequence: number) {
     this.recoveryEventSequenceSelected = eventSequence
+    if (this.recoveryReplayMode === 'selected' && this.isRecoveryReplayRealtime) {
+      this.queueRecoveryReplay()
+    }
+  }
+
+  setRecoveryReplayMode(mode: RecoveryReplayMode) {
+    if (this.recoveryReplayMode === mode) return
+    this.recoveryReplayMode = mode
+    if (this.isRecoveryReplayRealtime) this.queueRecoveryReplay()
   }
 
   async setRecoveryEventColCount(colCountInput: number) {
@@ -738,6 +789,123 @@ export class PopupStore {
       action: 'updateSettings',
       settings: { recovery_event_column_count: colCount }
     })
+  }
+
+  setRecoveryEventPopupOpen(isOpen: boolean) {
+    this.isRecoveryEventPopupOpen = isOpen
+  }
+
+  // Event types offered by the replay-target type dropdown: every type present
+  // in the loaded events, plus the default type so it is always selectable.
+  get recoveryEventTypes() {
+    const eventTypeSet = new Set([recoveryReplayTargetDefault.eventType])
+    for (const eventItem of this.recoveryEvents) {
+      eventTypeSet.add(eventItem.eventType)
+    }
+    return [...eventTypeSet].sort()
+  }
+
+  // The event sequence where target-based replay ends. Returns the snapshot
+  // cutoff when the end lands before the first event (replay zero events), and
+  // null when the target matches no recorded event.
+  get recoveryEventSequenceTargetEnd(): number | null {
+    const target = this.recoveryReplayTarget
+    const events = this.recoveryEvents
+    const eventsMatched = events.filter(
+      (eventItem) => eventItem.eventType === target.eventType
+    )
+    if (target.indexNth < 1 || eventsMatched.length < target.indexNth) return null
+    const eventMatched = target.isFromLast
+      ? eventsMatched[eventsMatched.length - target.indexNth]
+      : eventsMatched[target.indexNth - 1]
+    const indexMatched = events.indexOf(eventMatched)
+    const indexEnd = indexMatched + target.offsetStep
+    if (indexEnd < 0) return this.recoverySnapshot?.eventSequenceCutoff ?? null
+    if (indexEnd >= events.length) return events[events.length - 1].eventSequence
+    return events[indexEnd].eventSequence
+  }
+
+  setRecoveryReplayTarget(changes: Partial<RecoveryReplayTarget>) {
+    this.recoveryReplayTarget = { ...this.recoveryReplayTarget, ...changes }
+    if (this.recoveryReplayMode === 'target' && this.isRecoveryReplayRealtime) {
+      this.queueRecoveryReplay()
+    }
+  }
+
+  async setRecoveryReplayRealtime(isRealtime: boolean) {
+    this.isRecoveryReplayRealtime = isRealtime
+    if (isRealtime) this.queueRecoveryReplay()
+    await chrome.runtime.sendMessage({
+      action: 'updateSettings',
+      settings: { enable_recovery_replay_realtime: isRealtime }
+    })
+  }
+
+  // Replay using the first-line radio mode. Last step, given step, and the
+  // advanced target all go through this one entry.
+  async replayRecoveryByMode() {
+    if (this.recoveryReplayMode === 'last') {
+      return this.replayRecovery()
+    }
+    if (this.recoveryReplayMode === 'selected') {
+      if (this.recoveryEventSequenceSelected === null) {
+        this.setSnapshotMessage('error', 'Select an event to replay to')
+        return false
+      }
+      return this.replayRecovery(this.recoveryEventSequenceSelected)
+    }
+    return this.replayRecoveryToTarget()
+  }
+
+  // Rapid parameter edits are debounced, and a replay attempt while another
+  // snapshot action runs is retried instead of dropped.
+  queueRecoveryReplay() {
+    if (this.recoveryTargetReplayTimeoutId !== null) {
+      clearTimeout(this.recoveryTargetReplayTimeoutId)
+    }
+    this.recoveryTargetReplayTimeoutId = setTimeout(() => {
+      this.recoveryTargetReplayTimeoutId = null
+      if (this.isSnapshotBusy) {
+        this.queueRecoveryReplay()
+        return
+      }
+      void this.replayRecoveryByMode()
+    }, 200)
+  }
+
+  async replayRecoveryToTarget() {
+    const eventSequenceEnd = this.recoveryEventSequenceTargetEnd
+    if (eventSequenceEnd === null) {
+      this.setSnapshotMessage(
+        'error',
+        `No recorded event matches the replay target (${this.recoveryReplayTarget.eventType})`
+      )
+      return false
+    }
+    return this.replayRecovery(eventSequenceEnd)
+  }
+
+  // Effective widths of the events table columns. The index column follows the
+  // digit count of the largest sequence, so a large index stays fully visible
+  // without manual resizing. A width set by dragging the header border wins.
+  get recoveryEventColWidthById() {
+    const colWidthSet = this.folderColWidthByIdByViewId.get('recovery-events') ?? {}
+    const sequenceMax = this.recoveryEvents.length > 0
+      ? this.recoveryEvents[this.recoveryEvents.length - 1].eventSequence
+      : 0
+    const seqWidthAuto = Math.max(30, String(sequenceMax).length * 7 + 12)
+    return {
+      seq: colWidthSet.seq ?? seqWidthAuto,
+      type: colWidthSet.type ?? 108
+    }
+  }
+
+  setRecoveryEventColWidth(colId: 'seq' | 'type', width: number) {
+    const colWidthSet = {
+      ...(this.folderColWidthByIdByViewId.get('recovery-events') ?? {})
+    }
+    colWidthSet[colId] = width
+    this.folderColWidthByIdByViewId.set('recovery-events', colWidthSet)
   }
 
   setSnapshotIdsSelected(snapshotIds: string[]) {

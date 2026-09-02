@@ -1,0 +1,521 @@
+/* The Restore tab must fit inside the fixed popup with no popup-level
+   vertical scrollbar (refer to /doc/popup_size.md). The exact panel height is
+   measured at mount (refer to usePanelHeightFit in RecoveryPanel.tsx); the
+   events table absorbs the measured height and scrolls internally. */
+.recovery-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+}
+
+.recovery-replay-mode-row,
+.recovery-action-row,
+.recovery-confirm-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+}
+
+.recovery-replay-mode-lead {
+  color: #334155;
+  font-weight: 600;
+}
+
+.recovery-replay-mode-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #334155;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.recovery-replay-mode-option input:disabled + span {
+  opacity: 0.48;
+}
+
+.recovery-confirm-row {
+  padding-top: 3px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.recovery-button {
+  min-height: 23px;
+  padding: 2px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 2px;
+  background: #ffffff;
+  color: #334155;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.recovery-button-primary {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.recovery-button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.recovery-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 18px;
+  padding: 2px 3px;
+  border: 1px solid #cbd5e1;
+  border-radius: 2px;
+  background: #ffffff;
+  color: #475569;
+  cursor: pointer;
+}
+
+.recovery-icon-button:hover {
+  background: #f1f5f9;
+}
+
+.recovery-icon-button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.recovery-replay-target-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  color: #334155;
+}
+
+.recovery-replay-target-row-disabled {
+  opacity: 0.48;
+}
+
+.recovery-replay-target-text {
+  color: #64748b;
+}
+
+.recovery-replay-target-row .num-value-row {
+  gap: 2px;
+}
+
+.recovery-replay-target-row .num-value-step-button {
+  width: 18px;
+  min-height: 18px;
+}
+
+.recovery-replay-target-row .num-value-editable {
+  min-width: 24px;
+  min-height: 18px;
+  padding: 0 2px;
+  line-height: 16px;
+}
+
+.recovery-replay-target-row .segmented-control-track {
+  min-height: 20px;
+}
+
+.recovery-replay-target-row .segmented-control-segment {
+  min-height: 18px;
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
+.recovery-event-type-button {
+  min-height: 20px;
+  padding: 2px 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 2px;
+  background: #ffffff;
+  color: #334155;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.recovery-event-type-button:hover {
+  background: #f1f5f9;
+}
+
+.recovery-event-type-button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.recovery-realtime-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #334155;
+  cursor: pointer;
+}
+
+.recovery-source-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 4px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.recovery-section {
+  min-width: 0;
+  border-top: 1px solid #dbe2ea;
+  padding-top: 2px;
+  flex: 0 0 auto;
+}
+
+.recovery-event-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.recovery-section-title {
+  display: flex;
+  align-items: center;
+  padding: 0px;
+  padding-bottom: 2px;
+  gap: 4px;
+  min-width: 0;
+  min-height: 19px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+
+.recovery-overview > .recovery-section-title {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.recovery-count {
+  color: #64748b;
+  font-weight: 400;
+}
+
+/* Divider between the event counters and the table controls in the title
+   row. It is intentionally darker and taller than row borders. */
+.recovery-toolbar-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 1px 4px;
+  background: #94a3b8;
+}
+
+.recovery-event-column-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #64748b;
+  font-weight: 400;
+}
+
+.recovery-event-column-control .num-value-row {
+  gap: 2px;
+}
+
+.recovery-event-column-control .num-value-step-button {
+  width: 18px;
+  min-height: 18px;
+}
+
+.recovery-event-column-control .num-value-editable {
+  min-width: 24px;
+  min-height: 18px;
+  padding: 0 2px;
+  line-height: 16px;
+}
+
+.recovery-overview {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.recovery-overview-summary {
+  display: inline-flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 3px 8px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 3px;
+  color: #475569;
+  font-weight: 400;
+  user-select: text;
+}
+
+.recovery-overview-summary-item {
+  white-space: nowrap;
+}
+
+/* Preferred height; shrinkable when the whole panel runs out of height. */
+.recovery-window-list {
+  flex: 0 1 auto;
+  height: 55px;
+  min-height: 22px;
+  overflow: auto;
+}
+
+.recovery-window-row {
+  display: grid;
+  grid-template-columns: max-content max-content minmax(0, 1fr);
+  gap: 3px;
+  padding: 2px 3px;
+  border-bottom: 1px solid #eef2f6;
+  color: #475569;
+}
+
+.recovery-window-label,
+.recovery-window-tab-count {
+  white-space: nowrap;
+}
+
+.recovery-window-preview {
+  overflow: hidden;
+  color: #64748b;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recovery-event-table {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid #e2e8f0;
+}
+
+/* The header and the body rows use the same column template, gap, and
+   horizontal padding, and both reserve the scrollbar gutter, so header and
+   body columns stay aligned. */
+.recovery-event-table-header {
+  display: grid;
+  flex: 0 0 auto;
+  overflow: hidden;
+  scrollbar-gutter: stable;
+  background: #f8fafc;
+  border-bottom: 1px solid #d7dee7;
+}
+
+.recovery-event-header-group {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 0 3px;
+  border-right: 1px solid #e2e8f0;
+}
+
+.recovery-event-header-cell {
+  position: relative;
+  min-width: 0;
+  padding: 1px 0;
+  border-right: 1px solid #e2e8f0;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.recovery-event-header-cell:last-child {
+  border-right: 0;
+}
+
+/* Drag handle over the border at the right edge of a header cell. Wider than
+   the border line so the resize can start within a small tolerance range. */
+.recovery-event-col-handle {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+}
+
+.recovery-event-list {
+  display: grid;
+  align-content: start;
+  flex: 1 1 auto;
+  min-height: 48px;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  user-select: text;
+}
+
+.recovery-event-row {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
+  padding: 2px 3px;
+  border: 0;
+  border-right: 1px solid #eef2f6;
+  border-bottom: 1px solid #eef2f6;
+  background: #ffffff;
+  color: #475569;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.recovery-event-row:hover {
+  background: #f8fafc;
+}
+
+/* The event where the last replay ended. */
+.recovery-event-row-replay-end {
+  box-shadow: inset 2px 0 0 #16a34a;
+  background: #f2fbf5;
+}
+
+.recovery-event-row-selected {
+  background: #eaf3ff;
+  color: #1d4ed8;
+}
+
+.recovery-event-row-selected:hover {
+  background: #e2efff;
+}
+
+.recovery-event-row:disabled {
+  cursor: default;
+}
+
+.recovery-event-sequence,
+.recovery-event-type,
+.recovery-event-time {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recovery-event-sequence,
+.recovery-event-time {
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+
+.recovery-message-section {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+}
+
+/* Preferred height; shrinkable when the whole panel runs out of height. */
+.recovery-message-list {
+  flex: 0 1 auto;
+  height: 48px;
+  min-height: 22px;
+  overflow: auto;
+  border: 1px solid #e2e8f0;
+  background: #fbfcfd;
+  user-select: text;
+}
+
+.recovery-message-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 4px;
+  padding: 2px 3px;
+  border-bottom: 1px solid #eef2f6;
+  overflow-wrap: anywhere;
+}
+
+.recovery-message-level {
+  color: #64748b;
+  text-transform: capitalize;
+}
+
+.recovery-message-warning {
+  color: #8a4b08;
+}
+
+.recovery-message-error {
+  color: #a33a2b;
+}
+
+.recovery-message-log {
+  color: #475569;
+}
+
+.recovery-result-section {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 0 1 auto;
+  min-height: 0;
+}
+
+.recovery-empty {
+  padding: 0px 4px;
+  color: #64748b;
+  user-select: text;
+}
+
+/* Enlarged events view over the whole popup. */
+.recovery-event-popup-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  padding: 8px;
+  background: rgba(15, 23, 42, 0.35);
+}
+
+.recovery-event-popup {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 5px;
+  border: 1px solid #cbd5e1;
+  border-radius: 2px;
+  background: #ffffff;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.25);
+  font-size: 11px;
+}
+
+.recovery-event-popup-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  flex: 0 0 auto;
+  color: #334155;
+  font-weight: 600;
+}
+
+.recovery-event-popup-title-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.recovery-event-popup-close {
+  flex: 0 0 auto;
+  margin-left: auto;
+}

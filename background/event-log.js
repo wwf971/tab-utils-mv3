@@ -1,6 +1,32 @@
 (() => {
   const api = globalThis.TabSnapshot
   const tabUrlEventStateById = new Map()
+
+  // Only event types that can change a replayed window/tab state are stored.
+  // Event types outside this list are observed but never written to the event
+  // log, because recovery replay would ignore them anyway. Currently excluded:
+  // - tabZoomChanged: zoom level is not restored by recovery.
+  // Refer to /doc/snapshot.md#event-data for the documented lists.
+  const eventTypeRecordedSet = new Set([
+    'browserRunStarted',
+    'tabCreated',
+    'tabUpdated',
+    'tabMoved',
+    'tabActivated',
+    'tabHighlighted',
+    'tabAttached',
+    'tabDetached',
+    'tabRemoved',
+    'tabReplaced',
+    'windowCreated',
+    'windowRemoved',
+    'windowFocusChanged',
+    'windowBoundsChanged',
+    'tabGroupCreated',
+    'tabGroupUpdated',
+    'tabGroupMoved',
+    'tabGroupRemoved'
+  ])
   const getBrowserTabData = api.getBrowserTabData ?? ((tab) => ({
     tabSourceId: tab?.id ?? null,
     tabIndex: tab?.index ?? null,
@@ -150,6 +176,7 @@
   }
 
   api.recordBrowserEvent = (eventType, eventData = {}) => {
+    if (!eventTypeRecordedSet.has(eventType)) return
     const eventInput = {
       eventAtMs: Date.now(),
       eventType,
@@ -312,12 +339,12 @@
         api.recordBrowserEvent('tabReplaced', { tabSourceIdAdded, tabSourceIdRemoved })
       })
     }
-    if (chrome.tabs.onZoomChange) {
-      chrome.tabs.onZoomChange.addListener((zoomChangeInfo) => {
-        api.recordBrowserEvent('tabZoomChanged', zoomChangeInfo)
-      })
-    }
-
+    // tab zoom change events not affect restore replay result
+    // if (chrome.tabs.onZoomChange) {
+    //   chrome.tabs.onZoomChange.addListener((zoomChangeInfo) => {
+    //     api.recordBrowserEvent('tabZoomChanged', zoomChangeInfo)
+    //   })
+    // }
     chrome.windows.onCreated.addListener((windowCreated) => {
       const eventData = {
         windowSourceId: windowCreated.id,

@@ -172,9 +172,9 @@ Example:
 }
 ```
 
-The log covers current non-deprecated browser events relevant to state reconstruction.
+Only events that can change a replayed window/tab state are recorded. The event logger keeps an explicit list of recorded event types; an event type outside that list is never written to the log, because recovery replay would ignore it anyway. This keeps the event log small and keeps the replay event table free of noise.
 
-Tab events:
+Recorded tab events:
 
 - `tabCreated`
 - `tabUpdated`
@@ -185,23 +185,27 @@ Tab events:
 - `tabDetached`
 - `tabRemoved`
 - `tabReplaced` when supported
-- `tabZoomChanged`
 
-Window events:
+Recorded window events:
 
 - `windowCreated`
 - `windowRemoved`
 - `windowFocusChanged`
 - `windowBoundsChanged`
 
-Tab-group events when supported:
+Recorded tab-group events when supported:
 
 - `tabGroupCreated`
 - `tabGroupUpdated`
 - `tabGroupMoved`
 - `tabGroupRemoved`
 
-Tab title changes are not logged. Titles can change very frequently for clocks, stock prices, unread counts, and media status, while they do not determine which page recovery opens. A full snapshot still stores the current title for display.
+One run marker, `browserRunStarted`, is also recorded. It changes no window or tab, but it marks the start of one browser lifetime.
+
+Not recorded, because recovery does not restore what they describe:
+
+- `tabZoomChanged`: the page zoom level is not restored by recovery. Old stored logs can still contain this event type; replay skips it.
+- Tab title changes. Titles can change very frequently for clocks, stock prices, unread counts, and media status, while they do not determine which page recovery opens. A full snapshot still stores the current title for display.
 
 URL changes are logged with a configurable per-tab maximum frequency, default ten seconds. The first change is recorded immediately. Further changes inside the interval are coalesced in memory, and the newest URL is recorded at the interval boundary. This limits one tab to one URL event per interval without retaining stale intermediate URLs. If the background worker stops before a pending URL is flushed, the next full snapshot still captures the current URL.
 

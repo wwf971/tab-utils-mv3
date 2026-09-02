@@ -74,6 +74,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 			// Popup-only setting; the background just persists it.
 			settingsNext.recovery_event_column_count = message.settings.recovery_event_column_count;
 		}
+		if ('enable_recovery_replay_realtime' in message.settings) {
+			// Popup-only setting; the background just persists it.
+			settingsNext.enable_recovery_replay_realtime = message.settings.enable_recovery_replay_realtime;
+		}
 		chrome.storage.sync.set(settingsNext).then(async () => {
 			if (
 				'enable_badge_show_current_window_tab_count' in settingsNext ||

@@ -29,9 +29,35 @@ newest complete snapshot
 
 Replay is conservative. An object is removed or moved only when its identity can be found. A missing tab close, invalid index, missing event range, or unsupported event records a message without stopping later events. When state is uncertain, known tabs are kept.
 
-The user can replay through the selected event or through the last event. Confirmation is tied to the last replayed event sequence. The background repeats the same bounded replay before restoration, so the restored state matches the overview that the user confirms.
+Confirmation is tied to the last replayed event sequence. The background repeats the same bounded replay before restoration, so the restored state matches the overview that the user confirms.
 
 A typical selected-step use case is restoring after windows were closed manually and the browser was then relaunched. Select the event immediately before the unwanted window-close events, replay to that step, inspect the calculated snapshot, and restore it.
+
+## Choosing where replay ends
+
+Every replay is the same bounded replay; the first-line radios choose how the end event is found:
+
+```text
+replay end event
+  <- last step: the last available event
+  <- given step: one event picked in the events table
+  <- advanced: {offset} step of the (first/last) {index}-th {event type} event
+```
+
+The target form exists because one selected step is often hard to find by hand. A browser crash frequently records several window-close events at the end of the log, one per open window, so "replay to last step" rebuilds an almost empty state. The state to restore lies immediately before those close events.
+
+The target has four parameters:
+
+- event type, default `windowRemoved`
+- counting order, default counting from the last event
+- index, the n-th matching event in that order, default 1
+- offset, in steps relative to the matched event, default -1
+
+The defaults therefore mean "replay to one step before the last window-close event". If the browser had several windows, the user increases the index and watches the calculated snapshot until it matches the state before the crash, then restores.
+
+An offset can move the end before the first event; replay then keeps the snapshot unchanged. An offset past the last event replays everything. A target that matches no recorded event reports an error instead of replaying.
+
+With real-time replay on (a popup setting, `enable_recovery_replay_realtime` in `storage.sync`, default true), a mode change, a selected-event change, or an advanced parameter edit replays immediately, so the user can tune the current mode and directly observe the result. Rapid edits are debounced. The Replay button and the real-time replay checkbox stay on the first line and stay clickable in every mode. The advanced target controls stay greyed out while last step or given step is selected.
 
 ## Window identity during replay
 
@@ -89,13 +115,25 @@ Unrelated browser events during restoration enter the same batch and are not dis
 
 The Restore panel shows:
 
-1. The source snapshot.
-2. Selectable events after that snapshot.
-3. Replay warnings and errors.
-4. The calculated snapshot.
-5. Final confirmation.
+1. A first-line radio group that chooses where replay ends: last step, a given selected step, or the advanced target below. The Replay button and the real-time replay checkbox stay on this line and stay clickable in every mode.
+2. The advanced replay target controls (refer to [Choosing where replay ends](#choosing-where-replay-ends)). These stay greyed out unless the advanced radio is selected.
+3. The source snapshot, with its time, window count, and tab count on the same line as the title.
+4. Selectable events after that snapshot.
+5. Replay warnings and errors.
+6. The calculated snapshot.
+7. Final confirmation.
 
-`Replay to selected step` stops after the selected event. `Replay to last step` applies every available event. A checkbox beside each restore action selects batch or one-by-one tab creation. The event and message areas have fixed heights, and the panel fills the fixed popup width.
+Choosing last step replays every available event. Choosing given step replays through the selected event. The advanced radio uses the target parameters. The Replay button runs the current mode. With real-time replay on, a mode change, a selected-event change, or an advanced parameter edit also replays immediately. A checkbox beside each restore action selects batch or one-by-one tab creation. Snapshot window rows never wrap a cell such as `444 tabs`; extra title text is clipped.
+
+### Events table
+
+The events after the snapshot are shown as a table with index, type, and time columns and a header row. A columns-per-row control lets several such column groups share one row, separated from the event counters by a clear vertical divider. Dragging a column border in the header resizes that column. The index column width follows the digit count of the largest event sequence, so a large index such as 181181 stays fully visible without manual resizing. The row where the last replay ended is marked.
+
+A Maximize button beside the table title opens the same table enlarged in an in-popup overlay, so events are easier to find and select. The overlay close button sits at the top right corner. The overlay also closes on an outside click.
+
+### Panel height
+
+The Restore panel fills the fixed popup height; it measures its available height once when it mounts. The events table absorbs the remaining height and scrolls internally, while the other areas keep preferred heights and shrink only when the panel runs out of height. The popup itself must never get a vertical scrollbar; a popup-level scrollbar next to the scrolling inner areas is a layout bug. Refer to [Extension popup size](./popup_size.md).
 
 Background changes invalidate the displayed source, and the MobX store re-fetches it from the background. Manual refresh always performs the same full re-fetch.
 
