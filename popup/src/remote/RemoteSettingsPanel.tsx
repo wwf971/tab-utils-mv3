@@ -2,30 +2,67 @@ import { useState } from 'react'
 import { observer } from 'mobx-react-lite'
 import {
   ConfigPanel,
+  CrossIcon,
   TabsOnTop,
   TabsOnTopTab,
   type ConfigCustomControlProps
 } from '@wwf971/react-comp-misc'
 import { RemoteStore } from './RemoteStore'
+import {
+  hasRemoteAwsBuildDefaults,
+  remoteAwsBuildDefaults
+} from './RemoteBuildConfig'
 
-// Settings popup of the Remote tab: backend endpoint, login, and the aws-side
-// integrity area (check / initialize / index repair). Built from the
-// config-panel component series; all state lives in RemoteStore.
+// Settings popup of the Remote tab: backend selector (local server / aws
+// directly), per-backend endpoint settings, login, and the cloud integrity
+// area (check / initialize / index repair). Built from the config-panel
+// component series; all state lives in RemoteStore.
 export const RemoteSettingsPanel = observer(function RemoteSettingsPanel({
   store
 }: {
   store: RemoteStore
 }) {
   const settings = {
+    remote_backend_use: store.backendUse,
     remote_endpoint_url: store.endpointUrl,
+    remote_aws_endpoint_url: store.awsEndpointUrl,
+    remote_aws_region: store.awsRegion,
+    remote_aws_client_id: store.awsClientId,
+    awsDefaultsControl: store,
     loginControl: store,
     awsStatus: store
   }
   const [configStruct] = useState(() => ({
     items: [
       {
+        id: 'remote_backend_group',
+        label: 'Backend',
+        type: 'group',
+        children: [
+          {
+            id: 'remote_backend_use',
+            label: 'Backend to use',
+            description: 'Local home server, or aws (api gateway + cognito) directly',
+            type: 'enum',
+            options: [
+              { value: 'local', labelText: 'Local Server' },
+              { value: 'aws', labelText: 'AWS' }
+            ],
+            defaultValue: 'local'
+          },
+          {
+            id: 'loginControl',
+            label: 'Account',
+            type: 'custom',
+            compName: 'loginControl',
+            isFullWidth: true,
+            defaultValue: null
+          }
+        ]
+      },
+      {
         id: 'remote_endpoint_group',
-        label: 'Backend Endpoint',
+        label: 'Local Server',
         type: 'group',
         children: [
           {
@@ -34,12 +71,40 @@ export const RemoteSettingsPanel = observer(function RemoteSettingsPanel({
             description: 'Base URL of the tab cloud backend, e.g. http://192.168.1.10:8300',
             type: 'string',
             defaultValue: ''
+          }
+        ]
+      },
+      {
+        id: 'remote_aws_backend_group',
+        label: 'AWS Backend',
+        type: 'group',
+        children: [
+          {
+            id: 'remote_aws_endpoint_url',
+            label: 'API endpoint URL',
+            description: 'api_endpoint from backend-aws config_gen.yaml (ensure_architect.py output)',
+            type: 'string',
+            defaultValue: remoteAwsBuildDefaults.endpointUrl
           },
           {
-            id: 'loginControl',
-            label: 'Account',
+            id: 'remote_aws_region',
+            label: 'Region',
+            description: 'AWS region of the cognito user pool, e.g. ap-northeast-1',
+            type: 'string',
+            defaultValue: remoteAwsBuildDefaults.region
+          },
+          {
+            id: 'remote_aws_client_id',
+            label: 'App client id',
+            description: 'app_client_id from backend-aws config_gen.yaml',
+            type: 'string',
+            defaultValue: remoteAwsBuildDefaults.clientId
+          },
+          {
+            id: 'awsDefaultsControl',
+            label: 'Build defaults',
             type: 'custom',
-            compName: 'loginControl',
+            compName: 'awsDefaultsControl',
             isFullWidth: true,
             defaultValue: null
           }
@@ -63,6 +128,7 @@ export const RemoteSettingsPanel = observer(function RemoteSettingsPanel({
     ],
     getComp: (compName: string) => {
       if (compName === 'loginControl') return RemoteLoginControl
+      if (compName === 'awsDefaultsControl') return RemoteAwsDefaultsControl
       if (compName === 'awsStatus') return RemoteAwsStatusControl
       return null
     }
@@ -82,7 +148,7 @@ export const RemoteSettingsPanel = observer(function RemoteSettingsPanel({
           </button>
         </div>
         <div className={`remote-settings-message tab-search-message-${store.settingsMessageStatus}`}>
-          {store.settingsMessageText || 'Set the endpoint URL, then log in'}
+          {store.settingsMessageText || 'Select the backend, set its endpoint, then log in'}
         </div>
         <ConfigPanel
           data={settings}
@@ -93,12 +159,52 @@ export const RemoteSettingsPanel = observer(function RemoteSettingsPanel({
             }
             const valueId = String(eventData.valueId ?? '')
             const value = String(eventData.value ?? '')
+            if (valueId === 'remote_backend_use') {
+              return store.setBackendUse(value === 'aws' ? 'aws' : 'local')
+            }
             if (valueId === 'remote_endpoint_url') return store.updateEndpointUrl(value)
+            if (valueId === 'remote_aws_endpoint_url') return store.updateAwsEndpointUrl(value)
+            if (valueId === 'remote_aws_region') return store.updateAwsRegion(value)
+            if (valueId === 'remote_aws_client_id') return store.updateAwsClientId(value)
             return { code: 0 }
           }}
         />
         {store.isLoginOpen ? <RemoteLoginPopup store={store} /> : null}
       </div>
+    </div>
+  )
+})
+
+const RemoteAwsDefaultsControl = observer(function RemoteAwsDefaultsControl({
+  value
+}: ConfigCustomControlProps) {
+  const store = value as RemoteStore | null
+  if (!store) return null
+
+  const isAlreadyDefault = (
+    store.awsEndpointUrl === remoteAwsBuildDefaults.endpointUrl
+    && store.awsRegion === remoteAwsBuildDefaults.region
+    && store.awsClientId === remoteAwsBuildDefaults.clientId
+  )
+  return (
+    <div className="remote-login-control">
+      <div className="remote-login-state">
+        {hasRemoteAwsBuildDefaults
+          ? 'Generated AWS values were included in this build'
+          : 'No generated AWS values were included in this build'}
+      </div>
+      {hasRemoteAwsBuildDefaults ? (
+        <div className="remote-login-buttons">
+          <button
+            type="button"
+            className="tab-search-control-button"
+            disabled={store.settingsAction !== null || isAlreadyDefault}
+            onClick={() => void store.restoreAwsBuildDefaults()}
+          >
+            Restore Generated Values
+          </button>
+        </div>
+      ) : null}
     </div>
   )
 })
@@ -112,7 +218,7 @@ const RemoteLoginControl = observer(function RemoteLoginControl({
   return (
     <div className="remote-login-control">
       <div className="remote-login-state">
-        {store.isLoggedIn ? `Logged in as ${store.userId}` : 'Not logged in'}
+        {store.isLoggedIn ? `Logged in as ${store.loginDisplayName}` : 'Not logged in'}
       </div>
       <div className="remote-login-buttons">
         {store.isLoggedIn ? (
@@ -146,16 +252,28 @@ const RemoteLoginPopup = observer(function RemoteLoginPopup({
 }) {
   const isBusy = store.settingsAction !== null
   return (
-    <div className="remote-login-backdrop" onClick={() => store.setLoginOpen(false)}>
+    <div className="remote-login-backdrop">
       <form
         className="remote-login-popup"
-        onClick={(event) => event.stopPropagation()}
         onSubmit={(event) => {
           event.preventDefault()
           void store.login()
         }}
       >
-        <div className="remote-login-popup-title">Log in to Tab Cloud</div>
+        <div className="remote-login-popup-title">
+          <span>
+            {store.backendUse === 'aws'
+              ? 'Log in to Tab Cloud (AWS Cognito account)'
+              : 'Log in to Tab Cloud (local server account)'}
+          </span>
+          <button
+            type="button"
+            className="remote-login-popup-close"
+            onClick={() => store.setLoginOpen(false)}
+          >
+            <CrossIcon />
+          </button>
+        </div>
         <label className="remote-login-field">
           <span>Username</span>
           <input
@@ -184,14 +302,6 @@ const RemoteLoginPopup = observer(function RemoteLoginPopup({
             disabled={isBusy || !store.settingsUsername || !store.settingsPassword}
           >
             Login
-          </button>
-          <button
-            type="button"
-            className="tab-search-control-button"
-            disabled={isBusy}
-            onClick={() => store.setLoginOpen(false)}
-          >
-            Cancel
           </button>
         </div>
       </form>

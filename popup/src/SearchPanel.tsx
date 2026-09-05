@@ -16,6 +16,7 @@ import {
   TabItem,
   WindowSidebar,
   WindowTabView,
+  rowIdsSelectedAfterClick,
   type TabItemStatus
 } from '@wwf971/tab-manage-frontend-common'
 import { PopupStore } from './PopupStore'
@@ -48,6 +49,17 @@ interface WindowRowMenuState {
   posOpen: { x: number, y: number }
   offsetX: number
   offsetY: number
+}
+
+// One selected tab as the right-click tab menu sees it, the common shape of
+// both panel modes (search results and the all-windows view).
+interface TabMenuTab {
+  tabSourceId: number
+  title: string
+  url: string
+  windowSourceId: number
+  isActive: boolean
+  isWindowFocused: boolean
 }
 
 export const SearchPanel = observer(function SearchPanel({
@@ -107,7 +119,7 @@ export const SearchPanel = observer(function SearchPanel({
   )
 
   const openTabRowMenu = (tabSourceId: number, mouseEvent: MouseEvent) => {
-    const tabItem = itemsVisible.find((tab) => tab.tabSourceId === tabSourceId)
+    const tabItem = tabMenuFind(tabSourceId)
     const rowRect = getTabRowEl(tabSourceId)?.getBoundingClientRect()
     if (!tabItem || !rowRect) return
     // An already open menu is closed first and the new one appears on the next
@@ -167,6 +179,43 @@ export const SearchPanel = observer(function SearchPanel({
   // so shift-range selection only covers real tabs.
   const tabRowIdsOrder = itemsVisible.map((tab) => String(tab.tabSourceId))
 
+  // Selected tabs the right-click tab menu acts on, one common shape for both
+  // panel modes: row order for the menu items and the bring operations,
+  // select order for ordered operations like uploading.
+  const windowAllViewSelected = store.windowsAll.find(
+    (windowItem) => windowItem.windowSourceId === store.windowSourceIdSelectedAllView
+  ) ?? store.windowsAll[0]
+  const tabsMenuAllView: TabMenuTab[] = (windowAllViewSelected?.tabs ?? []).map((tab) => ({
+    tabSourceId: tab.tabSourceId,
+    title: tab.title,
+    url: tab.url,
+    windowSourceId: windowAllViewSelected.windowSourceId,
+    isActive: tab.isActive,
+    isWindowFocused: windowAllViewSelected.isFocused
+  }))
+  const tabMenuOfSearchItem = (tab: TabSearchItem): TabMenuTab => ({
+    tabSourceId: tab.tabSourceId,
+    title: tab.title,
+    url: tab.url,
+    windowSourceId: tab.windowSourceId,
+    isActive: tab.isActive,
+    isWindowFocused: tab.isWindowFocused
+  })
+  const tabIdSelectedSetAllView = new Set(store.tabIdsSelectedAllView)
+  const tabsMenuSelected: TabMenuTab[] = isAllView
+    ? tabsMenuAllView.filter((tab) => tabIdSelectedSetAllView.has(String(tab.tabSourceId)))
+    : search.visibleSelectedItems.map(tabMenuOfSearchItem)
+  const tabsMenuSelectedSelectOrder: TabMenuTab[] = isAllView
+    ? store.tabIdsSelectedAllView
+      .map((tabId) => tabsMenuAllView.find((tab) => String(tab.tabSourceId) === tabId))
+      .filter((tab): tab is TabMenuTab => tab !== undefined)
+    : search.visibleSelectedItemsSelectOrder.map(tabMenuOfSearchItem)
+  const tabMenuFind = (tabSourceId: number) => (
+    isAllView
+      ? tabsMenuAllView.find((tab) => tab.tabSourceId === tabSourceId)
+      : itemsVisible.find((tab) => tab.tabSourceId === tabSourceId)
+  )
+
   const setVisibleSelectedIds = (tabSourceIds: number[]) => {
     if (isContextVisible && contextSingle) {
       search.setContextSelectedIds(contextSingle.windowSourceId, tabSourceIds)
@@ -175,46 +224,21 @@ export const SearchPanel = observer(function SearchPanel({
     }
   }
 
-  // Same ctrl/shift rules as the FolderView multi-select example.
+  // Shared click rules (ctrl/shift/plain) of the table-like views; refer to
+  // rowClickSelect.ts in frontend-common.
   const applyTabRowClickSelect = (
     rowId: string,
     modifiers: { ctrl?: boolean, meta?: boolean, shift?: boolean }
   ) => {
-    const tabSourceId = Number(rowId)
-    if (!Number.isInteger(tabSourceId)) return
-    const rowIdsSelected = search.visibleSelectedIds.map(String)
-    const isCtrlPressed = modifiers.ctrl === true || modifiers.meta === true
-    if (isCtrlPressed) {
-      if (rowIdsSelected.includes(rowId)) {
-        setVisibleSelectedIds(
-          rowIdsSelected.filter((id) => id !== rowId).map(Number)
-        )
-      } else {
-        setVisibleSelectedIds([...rowIdsSelected, rowId].map(Number))
-      }
-      return
-    }
-    if (modifiers.shift === true && rowIdsSelected.length > 0) {
-      const indexAnchor = tabRowIdsOrder.indexOf(
-        rowIdsSelected[rowIdsSelected.length - 1]
-      )
-      const indexCurrent = tabRowIdsOrder.indexOf(rowId)
-      if (indexAnchor < 0 || indexCurrent < 0) {
-        setVisibleSelectedIds([tabSourceId])
-        return
-      }
-      const indexStart = Math.min(indexAnchor, indexCurrent)
-      const indexEnd = Math.max(indexAnchor, indexCurrent)
-      // The range keeps the anchor-to-target direction, so the selection
-      // array stays in the order rows were selected.
-      const rowIdsRange = tabRowIdsOrder.slice(indexStart, indexEnd + 1)
-      if (indexAnchor > indexCurrent) rowIdsRange.reverse()
-      setVisibleSelectedIds(
-        [...new Set([...rowIdsSelected, ...rowIdsRange])].map(Number)
-      )
-      return
-    }
-    setVisibleSelectedIds([tabSourceId])
+    if (!Number.isInteger(Number(rowId))) return
+    setVisibleSelectedIds(
+      rowIdsSelectedAfterClick(
+        rowId,
+        modifiers,
+        tabRowIdsOrder,
+        search.visibleSelectedIds.map(String)
+      ).map(Number)
+    )
   }
 
   const rows = isContextVisible && contextSingle
@@ -404,6 +428,13 @@ export const SearchPanel = observer(function SearchPanel({
               if (eventType === 'tabRowDoubleClick') {
                 void store.runTabSearchAction('activate', Number(eventData.tabSourceId))
               }
+              if (eventType === 'tabRowContextMenu') {
+                const mouseEvent = eventData.event as MouseEvent | undefined
+                mouseEvent?.preventDefault()
+                if (mouseEvent) {
+                  openTabRowMenu(Number(eventData.tabSourceId), mouseEvent)
+                }
+              }
               if (eventType === 'colWidthByIdChange') {
                 store.setFolderColWidthById(
                   'search-all',
@@ -560,7 +591,7 @@ export const SearchPanel = observer(function SearchPanel({
 
       {tabRowMenu ? (
         <MenuComp
-          data={{ items: getTabRowMenuItems(search, store.remote, tabRowMenu) }}
+          data={{ items: getTabRowMenuItems(tabsMenuSelected, store.remote, tabRowMenu) }}
           config={{
             isOpen: true,
             posOpen: tabRowMenu.posOpen,
@@ -585,7 +616,7 @@ export const SearchPanel = observer(function SearchPanel({
                 tabSourceId: tabRowMenu.tabSourceId,
                 titleText: tabRowMenu.titleText
               }
-              const tabsSourceFixed = search.visibleSelectedItems.map((tab) => ({
+              const tabsSourceFixed = tabsMenuSelected.map((tab) => ({
                 tabSourceId: tab.tabSourceId,
                 titleText: tab.title
               }))
@@ -612,7 +643,7 @@ export const SearchPanel = observer(function SearchPanel({
               if (item?.id === 'upload-selected-to-remote') {
                 // Tabs upload in the order they were selected, not in row order.
                 store.openRemoteUploadForTabs(
-                  search.visibleSelectedItemsSelectOrder.map((tab) => ({
+                  tabsMenuSelectedSelectOrder.map((tab) => ({
                     tabSourceId: tab.tabSourceId,
                     title: tab.title,
                     url: tab.url
@@ -620,9 +651,7 @@ export const SearchPanel = observer(function SearchPanel({
                 )
               }
               if (item?.id === 'upload-window-to-remote') {
-                const tabClicked = itemsVisible.find(
-                  (tab) => tab.tabSourceId === tabRowMenu.tabSourceId
-                )
+                const tabClicked = tabMenuFind(tabRowMenu.tabSourceId)
                 if (tabClicked) {
                   void store.openRemoteUploadForWindow(tabClicked.windowSourceId)
                 }
@@ -686,12 +715,13 @@ function getWindowsAllSummaryText(windows: Array<{ tabs: unknown[] }>) {
 // Menu items depend on the selection: the "before/after it" pair needs one
 // selected tab (the right-clicked one); the "before/after current tab" and
 // "before/after a target tab" pair takes any selection as the source tabs.
+// tabsSelected comes in the common TabMenuTab shape, so the search results
+// and the all-windows view share this menu.
 function getTabRowMenuItems(
-  search: PopupStore['tabSearch'],
+  tabsSelected: TabMenuTab[],
   remote: PopupStore['remote'],
   tabRowMenu: TabRowMenuState
 ) {
-  const tabsSelected = search.visibleSelectedItems
   const tabClicked = tabsSelected.find(
     (tab) => tab.tabSourceId === tabRowMenu.tabSourceId
   )

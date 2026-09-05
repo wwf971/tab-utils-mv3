@@ -175,11 +175,27 @@
 }
 
 .remote-login-popup-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
   padding-bottom: 3px;
   border-bottom: 1px solid #e5e7eb;
   color: #1f2937;
   font-size: 13px;
   font-weight: 600;
+}
+
+.remote-login-popup-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  padding: 0;
+  border: none;
+  background: none;
+  color: #6b7280;
+  cursor: pointer;
 }
 
 .remote-login-field {

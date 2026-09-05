@@ -40,6 +40,8 @@ config.0.*
 *.pyc
 __pycache__/
 
+config_gen*
+
 # Temporary files
 *.tmp
 *~

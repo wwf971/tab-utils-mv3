@@ -11,6 +11,7 @@ export interface RemoteResult<T = Record<string, unknown>> {
 }
 
 export const remoteCodeNetwork = -100
+export const remoteCodeAuth = -2
 export const remoteRequestTimeoutMs = 8000
 
 export async function remoteCall<T = Record<string, unknown>>(
@@ -34,9 +35,19 @@ export async function remoteCall<T = Record<string, unknown>>(
       body: path === '/api/status' ? undefined : JSON.stringify(body),
       signal: controller.signal
     })
-    const result = await response.json() as RemoteResult<T>
+    let result: RemoteResult<T> | null = null
+    try {
+      result = await response.json() as RemoteResult<T>
+    } catch {
+      result = null
+    }
     if (typeof result?.code !== 'number') {
-      return { code: remoteCodeNetwork, message: 'Malformed backend response' }
+      // the api gateway jwt authorizer rejects a bad/expired token with a bare
+      // 401 {"message": "Unauthorized"} that has no {code} envelope
+      if (response.status === 401 || response.status === 403) {
+        return { code: remoteCodeAuth, message: 'Backend rejected the login token, log in again' }
+      }
+      return { code: remoteCodeNetwork, message: `Malformed backend response (http ${response.status})` }
     }
     return result
   } catch (error) {

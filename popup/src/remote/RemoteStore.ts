@@ -1,5 +1,7 @@
 import { makeAutoObservable, runInAction } from 'mobx'
-import { remoteCall, remoteCodeNetwork, type RemoteResult } from './RemoteApi'
+import { remoteCall, remoteCodeAuth, remoteCodeNetwork, type RemoteResult } from './RemoteApi'
+import { cognitoLogin, cognitoRefresh } from './CognitoAuth'
+import { remoteAwsBuildDefaults } from './RemoteBuildConfig'
 
 // MobX store of every remote (tab cloud) feature: endpoint/login settings,
 // cloud status, the remote window cache, remote search (live and trash scope),
@@ -104,11 +106,27 @@ export interface RemoteConfigCheckHistory {
 
 const uploadBatchMax = 40
 
+export type RemoteBackendUse = 'local' | 'aws'
+
 export class RemoteStore {
-  // endpoint and login, persisted in storage.local
+  // which backend the popup talks to, persisted in storage.local:
+  // 'local' = the home flask server, 'aws' = api gateway + cognito directly
+  backendUse: RemoteBackendUse = 'local'
+  // local backend endpoint and login, persisted in storage.local
   endpointUrl = ''
   userId = ''
   token = ''
+  // aws backend settings and cognito session, persisted in storage.local;
+  // values come from backend-aws config_gen.yaml after ensure_architect.py
+  awsEndpointUrl = ''
+  awsRegion = ''
+  awsClientId = ''
+  awsUsername = ''
+  awsAccessToken = ''
+  awsRefreshToken = ''
+  awsExpireAtMs = 0
+  // dedupe concurrent access-token refreshes (popup fires parallel calls)
+  awsRefreshPromise: Promise<RemoteResult<unknown>> | null = null
   // settings popup
   isSettingsOpen = false
   isLoginOpen = false
@@ -168,12 +186,18 @@ export class RemoteStore {
     makeAutoObservable(this, {
       getContextCountSide: false,
       searchToken: false,
-      commitTimeoutId: false
+      commitTimeoutId: false,
+      awsRefreshPromise: false
     }, { autoBind: true })
   }
 
   get isLoggedIn() {
+    if (this.backendUse === 'aws') return this.awsRefreshToken !== ''
     return this.token !== ''
+  }
+
+  get loginDisplayName() {
+    return this.backendUse === 'aws' ? this.awsUsername : this.userId
   }
 
   get isBusy() {
@@ -208,17 +232,39 @@ export class RemoteStore {
 
   async init() {
     const stored = await chrome.storage.local.get([
+      'remote_backend_use',
       'remote_endpoint_url',
       'remote_user_id',
-      'remote_token'
+      'remote_token',
+      'remote_aws_endpoint_url',
+      'remote_aws_region',
+      'remote_aws_client_id',
+      'remote_aws_username',
+      'remote_aws_access_token',
+      'remote_aws_refresh_token',
+      'remote_aws_expire_at'
     ])
     runInAction(() => {
+      this.backendUse = stored.remote_backend_use === 'aws' ? 'aws' : 'local'
       this.endpointUrl = String(stored.remote_endpoint_url ?? '')
       this.userId = String(stored.remote_user_id ?? '')
       this.token = String(stored.remote_token ?? '')
-      this.settingsUsername = this.userId
+      this.awsEndpointUrl = stored.remote_aws_endpoint_url === undefined
+        ? remoteAwsBuildDefaults.endpointUrl
+        : String(stored.remote_aws_endpoint_url)
+      this.awsRegion = stored.remote_aws_region === undefined
+        ? remoteAwsBuildDefaults.region
+        : String(stored.remote_aws_region)
+      this.awsClientId = stored.remote_aws_client_id === undefined
+        ? remoteAwsBuildDefaults.clientId
+        : String(stored.remote_aws_client_id)
+      this.awsUsername = String(stored.remote_aws_username ?? '')
+      this.awsAccessToken = String(stored.remote_aws_access_token ?? '')
+      this.awsRefreshToken = String(stored.remote_aws_refresh_token ?? '')
+      this.awsExpireAtMs = Number(stored.remote_aws_expire_at ?? 0)
+      this.settingsUsername = this.loginDisplayName
     })
-    if (this.token && this.endpointUrl) {
+    if (this.isLoggedIn) {
       await this.configCheckHistoryFetch()
     }
   }
@@ -232,7 +278,59 @@ export class RemoteStore {
   }
 
   async call<T = Record<string, unknown>>(path: string, body: Record<string, unknown> = {}) {
+    if (this.backendUse === 'aws') {
+      const tokenResult = await this.awsAccessTokenEnsure()
+      if (tokenResult.code !== 0) return tokenResult as RemoteResult<T>
+      return remoteCall<T>(this.awsEndpointUrl, this.awsAccessToken, path, body)
+    }
     return remoteCall<T>(this.endpointUrl, this.token, path, body)
+  }
+
+  // a valid cognito access token before an aws call, renewing silently with
+  // the stored refresh token when the current one is (nearly) expired
+  async awsAccessTokenEnsure(): Promise<RemoteResult<unknown>> {
+    if (!this.awsRefreshToken) {
+      return { code: remoteCodeAuth, message: 'Not logged in. Open remote settings to log in' }
+    }
+    if (this.awsAccessToken && Date.now() < this.awsExpireAtMs - 60000) {
+      return { code: 0 }
+    }
+    if (!this.awsRefreshPromise) {
+      this.awsRefreshPromise = this.awsAccessTokenRefresh().finally(() => {
+        this.awsRefreshPromise = null
+      })
+    }
+    return this.awsRefreshPromise
+  }
+
+  async awsAccessTokenRefresh(): Promise<RemoteResult<unknown>> {
+    const result = await cognitoRefresh(this.awsRegion, this.awsClientId, this.awsRefreshToken)
+    return runInAction(() => {
+      if (result.code !== 0 || !result.data) {
+        // the refresh token itself expired or was revoked: back to logged out
+        this.awsAccessToken = ''
+        this.awsRefreshToken = ''
+        this.awsExpireAtMs = 0
+        void chrome.storage.local.set({
+          remote_aws_access_token: '',
+          remote_aws_refresh_token: '',
+          remote_aws_expire_at: 0
+        })
+        return {
+          code: remoteCodeAuth,
+          message: `Login session expired (${result.message ?? 'refresh failed'}). Log in again`
+        }
+      }
+      this.awsAccessToken = result.data.accessToken
+      this.awsExpireAtMs = result.data.expireAtMs
+      if (result.data.refreshToken) this.awsRefreshToken = result.data.refreshToken
+      void chrome.storage.local.set({
+        remote_aws_access_token: this.awsAccessToken,
+        remote_aws_refresh_token: this.awsRefreshToken,
+        remote_aws_expire_at: this.awsExpireAtMs
+      })
+      return { code: 0 }
+    })
   }
 
   setMessage(status: 'idle' | 'loading' | 'success' | 'error', text: string) {
@@ -261,7 +359,7 @@ export class RemoteStore {
     this.isLoginOpen = isOpen
     this.settingsPassword = ''
     if (isOpen && !this.settingsUsername) {
-      this.settingsUsername = this.userId
+      this.settingsUsername = this.loginDisplayName
     }
   }
 
@@ -273,13 +371,73 @@ export class RemoteStore {
   async updateEndpointUrl(endpointUrl: string) {
     const endpointUrlNext = endpointUrl.trim()
     if (endpointUrlNext !== this.endpointUrl) {
-      this.statusData = null
-      this.awsCheckData = null
-      this.configCheckHistory = null
-      this.cancelIndexRecreate()
+      this.backendDataReset()
     }
     this.endpointUrl = endpointUrlNext
     await chrome.storage.local.set({ remote_endpoint_url: this.endpointUrl })
+  }
+
+  async setBackendUse(backendUse: RemoteBackendUse) {
+    if (backendUse === this.backendUse) return
+    this.backendUse = backendUse
+    this.backendDataReset()
+    // remote data of the previous backend is stale for the new one
+    this.windowById.clear()
+    this.windowIds = []
+    this.windowsFetchedAt = 0
+    this.windowDefaultId = null
+    this.items = []
+    this.selectedIds = []
+    this.context = null
+    this.textCommitted = ''
+    this.setMessage('idle', '')
+    this.settingsUsername = this.loginDisplayName
+    await chrome.storage.local.set({ remote_backend_use: this.backendUse })
+    if (this.isSettingsOpen) void this.statusFetch()
+    if (this.isLoggedIn) void this.configCheckHistoryFetch()
+  }
+
+  backendDataReset() {
+    this.statusData = null
+    this.awsCheckData = null
+    this.configCheckHistory = null
+    this.cancelIndexRecreate()
+  }
+
+  async updateAwsEndpointUrl(endpointUrl: string) {
+    const endpointUrlNext = endpointUrl.trim()
+    if (endpointUrlNext !== this.awsEndpointUrl && this.backendUse === 'aws') {
+      this.backendDataReset()
+    }
+    this.awsEndpointUrl = endpointUrlNext
+    await chrome.storage.local.set({ remote_aws_endpoint_url: this.awsEndpointUrl })
+  }
+
+  async updateAwsRegion(region: string) {
+    this.awsRegion = region.trim()
+    await chrome.storage.local.set({ remote_aws_region: this.awsRegion })
+  }
+
+  async updateAwsClientId(clientId: string) {
+    this.awsClientId = clientId.trim()
+    await chrome.storage.local.set({ remote_aws_client_id: this.awsClientId })
+  }
+
+  async restoreAwsBuildDefaults() {
+    this.awsEndpointUrl = remoteAwsBuildDefaults.endpointUrl
+    this.awsRegion = remoteAwsBuildDefaults.region
+    this.awsClientId = remoteAwsBuildDefaults.clientId
+    if (this.backendUse === 'aws') {
+      this.backendDataReset()
+    }
+    await chrome.storage.local.set({
+      remote_aws_endpoint_url: this.awsEndpointUrl,
+      remote_aws_region: this.awsRegion,
+      remote_aws_client_id: this.awsClientId
+    })
+    if (this.isSettingsOpen && this.backendUse === 'aws') {
+      void this.statusFetch()
+    }
   }
 
   setSettingsUsername(username: string) {
@@ -291,13 +449,16 @@ export class RemoteStore {
   }
 
   async login() {
+    if (this.backendUse === 'aws') return this.loginAws()
     if (this.settingsAction) return false
     this.settingsAction = 'login'
     this.setSettingsMessage('loading', 'Logging in...')
-    const result = await this.call<{ token: string, userId: string }>('/api/auth/login', {
-      username: this.settingsUsername,
-      password: this.settingsPassword
-    })
+    const result = await remoteCall<{ token: string, userId: string }>(
+      this.endpointUrl, '', '/api/auth/login', {
+        username: this.settingsUsername,
+        password: this.settingsPassword
+      }
+    )
     return runInAction(() => {
       this.settingsAction = null
       if (result.code !== 0 || !result.data) {
@@ -318,7 +479,56 @@ export class RemoteStore {
     })
   }
 
+  async loginAws() {
+    if (this.settingsAction) return false
+    if (!this.awsRegion || !this.awsClientId) {
+      this.setSettingsMessage('error', 'Set the aws region and app client id first')
+      return false
+    }
+    this.settingsAction = 'login'
+    this.setSettingsMessage('loading', 'Logging in to aws cognito...')
+    const result = await cognitoLogin(
+      this.awsRegion, this.awsClientId, this.settingsUsername, this.settingsPassword
+    )
+    return runInAction(() => {
+      this.settingsAction = null
+      if (result.code !== 0 || !result.data) {
+        this.setSettingsMessage('error', result.message ?? 'Cognito login failed')
+        return false
+      }
+      this.awsAccessToken = result.data.accessToken
+      this.awsRefreshToken = result.data.refreshToken
+      this.awsExpireAtMs = result.data.expireAtMs
+      this.awsUsername = this.settingsUsername
+      this.isLoginOpen = false
+      this.settingsPassword = ''
+      void chrome.storage.local.set({
+        remote_aws_access_token: this.awsAccessToken,
+        remote_aws_refresh_token: this.awsRefreshToken,
+        remote_aws_expire_at: this.awsExpireAtMs,
+        remote_aws_username: this.awsUsername
+      })
+      this.setSettingsMessage('success', `Logged in as ${this.awsUsername}`)
+      void this.configCheckHistoryFetch()
+      return true
+    })
+  }
+
   async logout() {
+    if (this.backendUse === 'aws') {
+      this.awsAccessToken = ''
+      this.awsRefreshToken = ''
+      this.awsExpireAtMs = 0
+      this.awsCheckData = null
+      this.configCheckHistory = null
+      await chrome.storage.local.set({
+        remote_aws_access_token: '',
+        remote_aws_refresh_token: '',
+        remote_aws_expire_at: 0
+      })
+      this.setSettingsMessage('idle', 'Logged out')
+      return
+    }
     this.token = ''
     this.awsCheckData = null
     this.configCheckHistory = null

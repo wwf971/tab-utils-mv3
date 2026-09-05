@@ -412,7 +412,7 @@ Assigning a tag writes the relationship item and the tab item's `tagIdList` in o
 
 Config uses the two-layer scheme of `config-two-layer.md`: `config.yaml` holds tracked example values; `config.0.yaml` holds the real values, overrides matching entries, and stays untracked (gitignored).
 
-Users are hard coded in config for the time being, as a list of username/password pairs; the username is used as userId. Login exchanges username/password for a signed token; every other api requires the token in the `Authorization: Bearer` header.
+Auth is transport-specific. On the local server, users are hard coded in config for the time being, as a list of username/password pairs; the username is used as userId. Login exchanges username/password for a signed token; every other api requires the token in the `Authorization: Bearer` header. On the aws backend, login is aws cognito and the token is verified by the api gateway; refer to `../backend-aws/aws_backend_impl.md#login-and-session`.
 
 The elasticsearch config block follows the named-endpoint style shared with other projects: named blocks (for example `local`) each holding `host`, `port`, `scheme`, `index_name`, `number_of_shards`, and `endpoint_use` choosing the active one.
 
@@ -458,20 +458,23 @@ extension keeps its local features usable.
 ## Backend Code Boundaries
 
 ```text
-backend/tab_server.py            # http entry, auth, api routing, core logic of each api
+backend/tab_server_core.py       # core logic of each api, transport-independent
+backend/tab_server.py            # local transport: flask http entry, local auth, routing
 backend/tab_server_index.py      # general index api + elasticsearch implementation
 backend/config.yaml              # example config (auth, elasticsearch, server), tracked
 backend/config.0.yaml            # real config, untracked
 
+backend-aws/lambda_tab/          # aws transport: lambda entry behind api gateway
+backend-aws/tab_server_index_sqs.py  # general index api over the local es service
 backend-aws/tab_server_db.py     # dynamodb item access, transactions, lexorank calc, journal
-backend-aws/ensure_architect.py  # IaC: table specs, integrity check, ensure (create missing)
+backend-aws/ensure_architect.py  # IaC: table specs + the full aws backend ensure/check/delete
 backend-aws/config.yaml          # example aws config (region, keys, table prefix), tracked
 backend-aws/config.0.yaml        # real aws config, untracked
 ```
 
-The server framework is Flask. The core logic of each api stays as a short readable block in `tab_server.py`, calling named functions of the db and index modules; refer to `backend-design.md`.
+The core logic of each api stays as a short readable block in `tab_server_core.py`, calling named functions of the db and index modules; refer to `backend-design.md`. Two transports dispatch into it: the local flask server, and the aws lambda (refer to `../backend-aws/aws_backend_impl.md#one-core-two-transports`). Each transport passes its index module to the core; both index modules implement the same general index api.
 
-Everything that talks to aws lives under `backend-aws`, together with its own two config layers. `ensure_architect.py` is the IaC entry: it holds the table specs as the single source of truth and can be run directly from the terminal (`python ensure_architect.py`) to ensure the tables exist, instead of creating them manually in the aws console. The server reaches the same functions through `tab_server_db.aws_check()` and `aws_init()`, so the maintenance apis and the terminal script cannot diverge.
+Everything that talks to aws lives under `backend-aws`, together with its own two config layers. `ensure_architect.py` is the IaC entry: it holds the table specs as the single source of truth and ensures the whole aws backend from the terminal (`python ensure_architect.py`, refer to `../backend-aws/aws_backend_impl.md#ensure-script-iac-entry-point`). The server reaches the same table functions through `tab_server_db.aws_check()` and `aws_init()`, so the maintenance apis and the terminal script cannot diverge.
 
 All responses use the `{code, data, message}` envelope: code 0 for success, negative for failure.
 
@@ -527,11 +530,16 @@ There should be a settings icon at top right, clicking which will open a popup p
 Cloud service(aws etc) status should also be reflected in this area.
 
 The popup panel is built from the config-panel component series (`ConfigPanel`
-etc.): an endpoint/login group (endpoint url, username, password,
-login/logout), and a cloud status group. The cloud group uses top tabs for
-DynamoDB Tables, Search Index, and Check History. Each resource tab owns its
-check and initialization actions. The endpoint url, username, and token are
-stored in `storage.local`.
+etc.): a backend group (a selector choosing the backend to use — the local
+server, or aws directly — plus login/logout of the selected backend), one
+settings group per backend (local: endpoint url; aws: api endpoint url,
+cognito region and app client id), and a cloud status group. An extension
+build embeds those three AWS defaults from `backend-aws/config_gen.yaml` when
+they exist; users can override or restore them. The cloud group uses top tabs for DynamoDB Tables, Search
+Index, and Check History. Each resource tab owns its check and initialization
+actions. The selected backend, both backends' settings, and their login
+sessions (local: token; aws: cognito refresh + access token) are stored in
+`storage.local`, so switching backends never re-asks for anything.
 
 When the backend or aws is unreachable (frequent during early development), every remote feature shows its error inline and stays retryable; nothing blocks the rest of the popup.
 

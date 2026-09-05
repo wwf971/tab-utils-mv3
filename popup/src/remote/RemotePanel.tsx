@@ -9,6 +9,7 @@ import {
 import {
   TabContextEdge,
   TabItem,
+  rowIdsSelectedAfterClick,
   type TabItemStatus
 } from '@wwf971/tab-manage-frontend-common'
 import { RemoteStore, type RemoteTabItem } from './RemoteStore'
@@ -86,36 +87,15 @@ export const RemotePanel = observer(function RemotePanel({
 
   const rowIdsOrder = store.visibleItems.map((item) => item.id)
 
-  // same ctrl/shift selection rules as the local Search tab
+  // shared click rules (ctrl/shift/plain) of the table-like views; refer to
+  // rowClickSelect.ts in frontend-common
   const applyRowClickSelect = (
     rowId: string,
     modifiers: { ctrl?: boolean, meta?: boolean, shift?: boolean }
   ) => {
-    const rowIdsSelected = store.visibleSelectedIds
-    const isCtrlPressed = modifiers.ctrl === true || modifiers.meta === true
-    if (isCtrlPressed) {
-      store.setSelectedIds(
-        rowIdsSelected.includes(rowId)
-          ? rowIdsSelected.filter((id) => id !== rowId)
-          : [...rowIdsSelected, rowId]
-      )
-      return
-    }
-    if (modifiers.shift === true && rowIdsSelected.length > 0) {
-      const indexAnchor = rowIdsOrder.indexOf(rowIdsSelected[rowIdsSelected.length - 1])
-      const indexCurrent = rowIdsOrder.indexOf(rowId)
-      if (indexAnchor < 0 || indexCurrent < 0) {
-        store.setSelectedIds([rowId])
-        return
-      }
-      const indexStart = Math.min(indexAnchor, indexCurrent)
-      const indexEnd = Math.max(indexAnchor, indexCurrent)
-      store.setSelectedIds(
-        [...new Set([...rowIdsSelected, ...rowIdsOrder.slice(indexStart, indexEnd + 1)])]
-      )
-      return
-    }
-    store.setSelectedIds([rowId])
+    store.setSelectedIds(
+      rowIdsSelectedAfterClick(rowId, modifiers, rowIdsOrder, store.visibleSelectedIds)
+    )
   }
 
   const rows = isContextMode && context

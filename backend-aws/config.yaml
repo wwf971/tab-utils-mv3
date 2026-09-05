@@ -1,6 +1,13 @@
 
 # aws config (backend service --> aws services), example layer.
 # authentic values go to config.0.yaml (git-ignored), refer to config-two-layer.
+# generated resource ids (api endpoint, client id) go to config_gen.yaml,
+# written by ensure_architect.py.
+
+# unified name prefix of the aws backend resources created by this project
+# (user alias + project name, refer to aws_oa.md#sub-project-namespace)
+name_prefix: alice123-tab-cloud
+
 aws:
   region_name: ap-northeast-1
   access_key_id: EXAMPLE_ACCESS_KEY_ID
@@ -8,3 +15,22 @@ aws:
   dynamodb:
     table_name_prefix: tabCloud
     # endpoint_url: http://localhost:8000  # uncomment for local dynamodb during test
+
+# the aws_oa project provides cognito auth (_0_auth_cognito) and the local
+# es service (_2_local_es); their generated configs are read from here
+aws_oa:
+  project_dir: /path/to/aws_oa
+
+lambda:
+  runtime: python3.12
+  memory_mb: 256
+  timeout_sec: 30
+
+cognito:
+  refresh_token_valid_days: 90  # how long the extension login session lasts
+
+local_es:
+  # index on the shared local es, named with this project's prefix
+  index_name: tab_cloud_tab
+  result_timeout: 20          # seconds a search waits for the home worker
+  result_poll_interval: 0.25  # seconds between result polls
