@@ -9,6 +9,17 @@ The search panel lets the user find open tabs, select results, and act on them. 
 
 `PopupStore` is the source of truth: the fetched items, the selected tab IDs of each view, the loaded context range, and the running action. `SearchPanel` renders from the store and sends user attempts back to it. The search state itself lives in a reusable `TabSearchCore` class, which the snapshot detail view also uses over its own steady data.
 
+### Panel modes
+
+A segmented control above the Search tab switches between three top-level panel modes:
+
+- `Search` shows the search field and the matched tabs (the result views below).
+- `All Windows` shows the complete live windows tree: every window at the left side, the selected window's tabs at the right.
+- `Selected Tabs` shows only the browser-selected (highlighted) tabs of each window. Chrome and Firefox allow selecting multiple tabs in a window (ctrl/shift+click on the tab bar); this mode exists to act on such a selection in one run, typically uploading it to remote through the right-click menu.
+
+All modes and views render through the shared `WindowTabView` component of `@wwf971/tab-manage-frontend-common` (window sidebar + tab table). Its appearance is a view mode: `table` renders index/title/url/group/state columns; `item` renders one `TabItem` per tab (icon, title over url, status marks), which is what every panel mode here uses. The sidebar can be hidden, which is how the flat `list` result view is rendered. In `All Windows` and `Selected Tabs` the status marks are hidden, and the view fills the remaining popup height instead of using a fixed table height.
+
+`All Windows` and `Selected Tabs` read one live windows tree (`windowsAll`), refreshed on background change notices; `Selected Tabs` reduces each window to its selected tabs. The active tab of a window counts as selected (refer to [Live browser state](./browser_state.md), Multi-tab selection), so a window without an explicit multi-selection shows its active tab. Both modes start on the window the user was in before opening the popup. Entering `Selected Tabs` and switching windows there selects every shown tab, so the usual flow — select tabs in the browser, open the popup, right-click, upload — needs no re-selection in the table; in `All Windows` a window switch drops the tab selection instead, like the snapshot window sidebar.
 
 ### Search result views
 

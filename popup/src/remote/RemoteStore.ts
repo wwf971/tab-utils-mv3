@@ -58,11 +58,21 @@ export interface RemoteUploadTab {
   url: string
 }
 
+// One tab row of the upload panel with its own upload progress. Tabs upload
+// one by one; a failed tab does not block the remaining tabs.
+export interface RemoteUploadTabState extends RemoteUploadTab {
+  status: 'pending' | 'uploading' | 'success' | 'fail'
+  errorText: string
+}
+
 export interface RemoteUploadPanelState {
-  tabList: RemoteUploadTab[]
+  tabList: RemoteUploadTabState[]
   sourceText: string
   isCloseOnSuccess: boolean
   isApplying: boolean
+  // set by the Stop button; the run breaks after the tab currently being
+  // processed finishes (success or fail), never in the middle of one tab
+  isStopRequested: boolean
   windowIdSelected: string | null // null = the default remote window
 }
 
@@ -103,8 +113,6 @@ export interface RemoteConfigCheckHistory {
   isUploadAllowed: boolean
   uploadBlockReason: string
 }
-
-const uploadBatchMax = 40
 
 export type RemoteBackendUse = 'local' | 'aws'
 
@@ -265,7 +273,7 @@ export class RemoteStore {
       this.settingsUsername = this.loginDisplayName
     })
     if (this.isLoggedIn) {
-      await this.configCheckHistoryFetch()
+      await this.configCheckEnsure()
     }
   }
 
@@ -394,7 +402,7 @@ export class RemoteStore {
     this.settingsUsername = this.loginDisplayName
     await chrome.storage.local.set({ remote_backend_use: this.backendUse })
     if (this.isSettingsOpen) void this.statusFetch()
-    if (this.isLoggedIn) void this.configCheckHistoryFetch()
+    if (this.isLoggedIn) void this.configCheckEnsure()
   }
 
   backendDataReset() {
@@ -474,7 +482,7 @@ export class RemoteStore {
         remote_user_id: this.userId
       })
       this.setSettingsMessage('success', `Logged in as ${this.userId}`)
-      void this.configCheckHistoryFetch()
+      void this.configCheckEnsure()
       return true
     })
   }
@@ -509,7 +517,7 @@ export class RemoteStore {
         remote_aws_username: this.awsUsername
       })
       this.setSettingsMessage('success', `Logged in as ${this.awsUsername}`)
-      void this.configCheckHistoryFetch()
+      void this.configCheckEnsure()
       return true
     })
   }
@@ -578,6 +586,28 @@ export class RemoteStore {
     if (data.checkHistory) {
       this.configCheckHistory = data.checkHistory
     }
+  }
+
+  // Make the upload gate reflect the real cloud state right after login or
+  // popup open. isUploadAllowed needs a recorded config check, but the check
+  // history lives in backend process memory (refer to backend/tab_cloud.md,
+  // AWS Integrity and Initialization), so a freshly started backend (for
+  // example an aws lambda cold start) has an empty history even when the
+  // tables and index are fine. When the required checks are missing from the
+  // fetched history, call /api/status once (it runs and records both checks)
+  // and fetch the history again.
+  async configCheckEnsure() {
+    const isFetched = await this.configCheckHistoryFetch()
+    if (!isFetched) return false
+    if (this.configCheckHistory?.isUploadAllowed === true) return true
+    const latestByType = this.configCheckHistory?.latestByType ?? {}
+    const isCheckMissing = !latestByType.dynamodbTables || !latestByType.searchIndex
+    // the checks ran and failed: rerunning them silently cannot help, the
+    // user fixes the cloud side from the settings panel
+    if (!isCheckMissing) return false
+    const statusResult = await this.call('/api/status')
+    if (statusResult.code !== 0) return false
+    return this.configCheckHistoryFetch()
   }
 
   async configCheckHistoryFetch() {
@@ -1238,10 +1268,11 @@ export class RemoteStore {
       return false
     }
     this.uploadPanel = {
-      tabList,
+      tabList: tabList.map((tab) => ({ ...tab, status: 'pending', errorText: '' })),
       sourceText,
       isCloseOnSuccess: true,
       isApplying: false,
+      isStopRequested: false,
       windowIdSelected: null
     }
     this.uploadPanelOpenCount += 1
@@ -1279,6 +1310,31 @@ export class RemoteStore {
     if (this.uploadPanel) this.uploadPanel.windowIdSelected = windowId
   }
 
+  // Stop button of the running upload. The run breaks after the tab currently
+  // being processed completes its full logic (success or fail).
+  requestUploadStop() {
+    if (this.uploadPanel?.isApplying) this.uploadPanel.isStopRequested = true
+  }
+
+  // Progress of the running or finished upload, shown by the upload panel.
+  get uploadProgress() {
+    const panel = this.uploadPanel
+    if (!panel) return null
+    const countSuccess = panel.tabList.filter((tab) => tab.status === 'success').length
+    const countFail = panel.tabList.filter((tab) => tab.status === 'fail').length
+    return {
+      countTotal: panel.tabList.length,
+      countSuccess,
+      countFail,
+      countDone: countSuccess + countFail
+    }
+  }
+
+  // Upload the panel tabs one by one, each in its own backend call, so one
+  // failed tab does not block the remaining tabs (partial failure is allowed).
+  // A tab with close-on-success enabled is closed right after its own upload
+  // is confirmed, not in a batch at the end. Applying again after a partial
+  // failure retries only the tabs that are not uploaded yet.
   async applyUpload(): Promise<{ isOk: boolean, messageText: string }> {
     const panel = this.uploadPanel
     if (!panel || panel.isApplying || panel.tabList.length === 0) {
@@ -1291,39 +1347,66 @@ export class RemoteStore {
       return { isOk: false, messageText: this.uploadBlockReason }
     }
     panel.isApplying = true
+    panel.isStopRequested = false
+    for (const tab of panel.tabList) {
+      if (tab.status === 'success') continue
+      tab.status = 'pending'
+      tab.errorText = ''
+    }
+    let closeFailCount = 0
     try {
-      // each chunk is one backend transaction; the batch cap comes from the api
+      // the first successful upload decides the target window when none is
+      // chosen; every later tab goes to that same window
       let windowId = panel.windowIdSelected
-      for (let indexStart = 0; indexStart < panel.tabList.length; indexStart += uploadBatchMax) {
-        const chunk = panel.tabList.slice(indexStart, indexStart + uploadBatchMax)
+      for (const tab of panel.tabList) {
+        if (tab.status === 'success') continue
+        if (panel.isStopRequested) break
+        runInAction(() => {
+          tab.status = 'uploading'
+        })
         const body: Record<string, unknown> = {
-          tabList: chunk.map((tab) => ({ title: tab.title, url: tab.url }))
+          tabList: [{ title: tab.title, url: tab.url }]
         }
         if (windowId) body.windowId = windowId
         const result = await this.call<{ windowId: string }>('/api/tab/create', body)
         if (result.code !== 0 || !result.data) {
-          return { isOk: false, messageText: result.message ?? 'Upload failed' }
+          runInAction(() => {
+            tab.status = 'fail'
+            tab.errorText = result.message ?? 'Upload failed'
+          })
+          continue
         }
-        // later chunks go to the same window the first chunk landed in
         windowId = result.data.windowId
-      }
-      if (panel.isCloseOnSuccess) {
-        const tabSourceIds = panel.tabList.map((tab) => tab.tabSourceId)
-        try {
-          await chrome.tabs.remove(tabSourceIds)
-        } catch (error) {
-          return {
-            isOk: true,
-            messageText: `Uploaded, but closing local tabs failed: ${getErrorText(error)}`
+        runInAction(() => {
+          tab.status = 'success'
+        })
+        if (panel.isCloseOnSuccess) {
+          try {
+            await chrome.tabs.remove(tab.tabSourceId)
+          } catch {
+            // the tab is uploaded; it may have been closed manually meanwhile
+            closeFailCount += 1
           }
         }
-        return { isOk: true, messageText: `${panel.tabList.length} tab(s) uploaded and closed` }
       }
-      return { isOk: true, messageText: `${panel.tabList.length} tab(s) uploaded` }
     } finally {
       runInAction(() => {
-        if (this.uploadPanel) this.uploadPanel.isApplying = false
+        if (this.uploadPanel) {
+          this.uploadPanel.isApplying = false
+          this.uploadPanel.isStopRequested = false
+        }
       })
+    }
+    const countSuccess = panel.tabList.filter((tab) => tab.status === 'success').length
+    const countFail = panel.tabList.filter((tab) => tab.status === 'fail').length
+    const countSkipped = panel.tabList.length - countSuccess - countFail
+    const parts = [`${countSuccess} tab(s) uploaded`]
+    if (countFail > 0) parts.push(`${countFail} failed`)
+    if (countSkipped > 0) parts.push(`${countSkipped} not attempted (stopped)`)
+    if (closeFailCount > 0) parts.push(`closing ${closeFailCount} local tab(s) failed`)
+    return {
+      isOk: countFail === 0 && countSkipped === 0,
+      messageText: parts.join(', ')
     }
   }
 }

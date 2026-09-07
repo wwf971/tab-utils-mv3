@@ -7,17 +7,15 @@ import {
 import { observer } from 'mobx-react-lite'
 import {
   FileIcon,
-  FolderView,
   MenuComp,
   SegmentedControl
 } from '@wwf971/react-comp-misc'
 import {
-  TabContextEdge,
   TabItem,
-  WindowSidebar,
   WindowTabView,
-  rowIdsSelectedAfterClick,
-  type TabItemStatus
+  type SnapshotWindowData,
+  type TabItemStatus,
+  type WindowTabViewContext
 } from '@wwf971/tab-manage-frontend-common'
 import { PopupStore } from './PopupStore'
 import { type TabSearchItem } from './TabSearchCore'
@@ -29,9 +27,6 @@ import {
   handleSearchFieldPaste
 } from './searchFieldPlain'
 import './SearchPanel.css'
-
-const contextEdgeRowIdBefore = 'context-edge-before'
-const contextEdgeRowIdAfter = 'context-edge-after'
 
 // Right-click menu on one tab row. The click offset inside the row rect is
 // kept so the menu stays static relative to its row while scrolling.
@@ -52,7 +47,7 @@ interface WindowRowMenuState {
 }
 
 // One selected tab as the right-click tab menu sees it, the common shape of
-// both panel modes (search results and the all-windows view).
+// every panel mode (search results, all-windows, selected-tabs).
 interface TabMenuTab {
   tabSourceId: number
   title: string
@@ -61,6 +56,46 @@ interface TabMenuTab {
   isActive: boolean
   isWindowFocused: boolean
 }
+
+// The 'All Windows' and 'Selected Tabs' modes fill the fixed popup height
+// (refer to /doc/popup_size.md): first fill down to the popup bottom, then
+// shave off exactly the overflow the scrolling ancestor still reports. The
+// same approach as the Restore tab, measured when the mode is entered.
+function useResultsHeightFit(
+  resultsRef: React.RefObject<HTMLDivElement>,
+  isEnabled: boolean
+) {
+  const [heightPx, setHeightPx] = useState<number | null>(null)
+  const isOverflowCheckedRef = useRef(false)
+  useEffect(() => {
+    if (!isEnabled) {
+      setHeightPx(null)
+      isOverflowCheckedRef.current = false
+      return
+    }
+    const resultsEl = resultsRef.current
+    if (!resultsEl) return
+    const scrollerEl = resultsEl.closest('.popup-config-panel') as HTMLElement | null
+    if (heightPx === null) {
+      if (scrollerEl) scrollerEl.scrollTop = 0
+      const top = resultsEl.getBoundingClientRect().top
+      setHeightPx(Math.max(200, Math.floor(document.documentElement.clientHeight - top)))
+      return
+    }
+    if (isOverflowCheckedRef.current || !scrollerEl) return
+    isOverflowCheckedRef.current = true
+    const overflow = scrollerEl.scrollHeight - scrollerEl.clientHeight
+    if (overflow > 0) {
+      setHeightPx((heightCurrent) => Math.max(200, (heightCurrent ?? 260) - overflow))
+    }
+  }, [isEnabled, heightPx, resultsRef])
+  return heightPx
+}
+
+// Height of the FolderView status bar inside WindowTabView (refer to
+// .window-tab-view .folder-statusbar), subtracted from the fitted height so
+// the table body plus the status bar exactly fill the measured space.
+const windowTabStatusBarHeightPx = 18
 
 export const SearchPanel = observer(function SearchPanel({
   store
@@ -82,14 +117,16 @@ export const SearchPanel = observer(function SearchPanel({
   // The window view shows windows with matches at the left side and the
   // selected window's matches at the right, like the snapshot detail.
   const isWindowView = store.searchViewCurrent === 'window'
-  // Full display is a top-level panel mode, separate from List/Windows search
-  // result views.
-  const isAllView = store.searchWorkspaceMode === 'all'
+  // 'All Windows' (full live tree) and 'Selected Tabs' (browser-selected tabs
+  // of each window) are top-level panel modes, separate from the List/Windows
+  // search result views. Both render the windows tree kept in windowsAll.
+  const isWindowsMode = store.searchWorkspaceMode === 'all' ||
+    store.searchWorkspaceMode === 'selected'
   const windowSourceIdSelected = isWindowView ? store.searchWindowSourceIdEffective : null
   const isContextVisible = isContextMode && contextSingle !== null &&
     (!isWindowView || contextSingle.windowSourceId === windowSourceIdSelected)
-  // Tab rows of the current view: the context slice, the selected window's
-  // matches, or the flat match list.
+  // Tab rows of the current search view: the context slice, the selected
+  // window's matches, or the flat match list.
   const itemsVisible = isContextVisible && contextSingle
     ? contextSingle.items
     : isWindowView
@@ -102,17 +139,7 @@ export const SearchPanel = observer(function SearchPanel({
     search.isVisibleSelectedCurrentActive
   )
 
-  const scrollRequestCount = contextSingle?.scrollRequestCount ?? 0
-  const tabCenterSourceId = contextSingle?.tabCenterSourceId ?? null
-  useEffect(() => {
-    if (scrollRequestCount === 0 || tabCenterSourceId === null) return
-    requestAnimationFrame(() => {
-      const rowEl = resultsRef.current?.querySelector(
-        `[data-row-id="${tabCenterSourceId}"]`
-      )
-      rowEl?.scrollIntoView({ block: 'center' })
-    })
-  }, [scrollRequestCount, tabCenterSourceId])
+  const resultsHeightPx = useResultsHeightFit(resultsRef, isWindowsMode)
 
   const getTabRowEl = (tabSourceId: number) => (
     resultsRef.current?.querySelector(`[data-row-id="${tabSourceId}"]`) as HTMLElement | null
@@ -144,7 +171,7 @@ export const SearchPanel = observer(function SearchPanel({
   // same way right-clicking a tab row selects that tab first.
   const openWindowRowMenu = (windowSourceId: number, mouseEvent: MouseEvent) => {
     mouseEvent.preventDefault()
-    if (isAllView) store.setWindowSourceIdSelectedAllView(windowSourceId)
+    if (isWindowsMode) store.setWindowSourceIdSelectedAllView(windowSourceId)
     else store.setSearchWindowSourceIdSelected(windowSourceId)
     const rowRect = getWindowRowEl(windowSourceId)?.getBoundingClientRect()
     if (!rowRect) return
@@ -159,39 +186,26 @@ export const SearchPanel = observer(function SearchPanel({
     })
   }
 
-  // Loading earlier tabs prepends rows. The scroll offset is compensated so the
-  // tabs already on screen stay in place and no visual jump happens.
   const loadMoreTabContext = async (direction: 'before' | 'after') => {
     const windowSourceId = contextSingle?.windowSourceId
-    if (windowSourceId === undefined) return
-    const scrollEl = resultsRef.current?.querySelector('.folder-view-switcher-content')
-    const scrollHeightBefore = scrollEl?.scrollHeight ?? 0
-    const scrollTopBefore = scrollEl?.scrollTop ?? 0
-    const isLoaded = await search.loadMoreContext(windowSourceId, direction)
-    if (isLoaded && direction === 'before' && scrollEl) {
-      requestAnimationFrame(() => {
-        scrollEl.scrollTop = scrollTopBefore + (scrollEl.scrollHeight - scrollHeightBefore)
-      })
-    }
+    if (windowSourceId === undefined) return false
+    return search.loadMoreContext(windowSourceId, direction)
   }
 
-  // Tab row IDs in display order. Edge rows of the context view are excluded
-  // so shift-range selection only covers real tabs.
-  const tabRowIdsOrder = itemsVisible.map((tab) => String(tab.tabSourceId))
-
-  // Selected tabs the right-click tab menu acts on, one common shape for both
-  // panel modes: row order for the menu items and the bring operations,
+  // Selected tabs the right-click tab menu acts on, one common shape for every
+  // panel mode: row order for the menu items and the bring operations,
   // select order for ordered operations like uploading.
-  const windowAllViewSelected = store.windowsAll.find(
+  const windowsMode = store.windowsWorkspaceVisible
+  const windowModeSelected = windowsMode.find(
     (windowItem) => windowItem.windowSourceId === store.windowSourceIdSelectedAllView
-  ) ?? store.windowsAll[0]
-  const tabsMenuAllView: TabMenuTab[] = (windowAllViewSelected?.tabs ?? []).map((tab) => ({
+  ) ?? windowsMode[0]
+  const tabsMenuWindowsMode: TabMenuTab[] = (windowModeSelected?.tabs ?? []).map((tab) => ({
     tabSourceId: tab.tabSourceId,
     title: tab.title,
     url: tab.url,
-    windowSourceId: windowAllViewSelected.windowSourceId,
+    windowSourceId: windowModeSelected.windowSourceId,
     isActive: tab.isActive,
-    isWindowFocused: windowAllViewSelected.isFocused
+    isWindowFocused: windowModeSelected.isFocused
   }))
   const tabMenuOfSearchItem = (tab: TabSearchItem): TabMenuTab => ({
     tabSourceId: tab.tabSourceId,
@@ -201,18 +215,18 @@ export const SearchPanel = observer(function SearchPanel({
     isActive: tab.isActive,
     isWindowFocused: tab.isWindowFocused
   })
-  const tabIdSelectedSetAllView = new Set(store.tabIdsSelectedAllView)
-  const tabsMenuSelected: TabMenuTab[] = isAllView
-    ? tabsMenuAllView.filter((tab) => tabIdSelectedSetAllView.has(String(tab.tabSourceId)))
+  const tabIdSelectedSetWindowsMode = new Set(store.tabIdsSelectedAllView)
+  const tabsMenuSelected: TabMenuTab[] = isWindowsMode
+    ? tabsMenuWindowsMode.filter((tab) => tabIdSelectedSetWindowsMode.has(String(tab.tabSourceId)))
     : search.visibleSelectedItems.map(tabMenuOfSearchItem)
-  const tabsMenuSelectedSelectOrder: TabMenuTab[] = isAllView
+  const tabsMenuSelectedSelectOrder: TabMenuTab[] = isWindowsMode
     ? store.tabIdsSelectedAllView
-      .map((tabId) => tabsMenuAllView.find((tab) => String(tab.tabSourceId) === tabId))
+      .map((tabId) => tabsMenuWindowsMode.find((tab) => String(tab.tabSourceId) === tabId))
       .filter((tab): tab is TabMenuTab => tab !== undefined)
     : search.visibleSelectedItemsSelectOrder.map(tabMenuOfSearchItem)
   const tabMenuFind = (tabSourceId: number) => (
-    isAllView
-      ? tabsMenuAllView.find((tab) => tab.tabSourceId === tabSourceId)
+    isWindowsMode
+      ? tabsMenuWindowsMode.find((tab) => tab.tabSourceId === tabSourceId)
       : itemsVisible.find((tab) => tab.tabSourceId === tabSourceId)
   )
 
@@ -224,73 +238,48 @@ export const SearchPanel = observer(function SearchPanel({
     }
   }
 
-  // Shared click rules (ctrl/shift/plain) of the table-like views; refer to
-  // rowClickSelect.ts in frontend-common.
-  const applyTabRowClickSelect = (
-    rowId: string,
-    modifiers: { ctrl?: boolean, meta?: boolean, shift?: boolean }
-  ) => {
-    if (!Number.isInteger(Number(rowId))) return
-    setVisibleSelectedIds(
-      rowIdsSelectedAfterClick(
-        rowId,
-        modifiers,
-        tabRowIdsOrder,
-        search.visibleSelectedIds.map(String)
-      ).map(Number)
-    )
+  // Windows tree of the search views, built from the flat search items: the
+  // matched windows with their matched tabs, and the context slice replacing
+  // the tabs of its window while a context is shown.
+  const windowsSearch: SnapshotWindowData[] = (() => {
+    if (isContextVisible && contextSingle) {
+      if (!isWindowView) return getWindowsOfItems(contextSingle.items)
+      const windows = getWindowsOfItems(search.items)
+      const windowContext = getWindowsOfItems(contextSingle.items)[0]
+      if (!windowContext) return windows
+      const indexContext = windows.findIndex(
+        (windowItem) => windowItem.windowSourceId === windowContext.windowSourceId
+      )
+      if (indexContext >= 0) windows[indexContext] = windowContext
+      else windows.push(windowContext)
+      return windows
+    }
+    return getWindowsOfItems(search.items)
+  })()
+
+  const contextView: WindowTabViewContext | null = isContextVisible && contextSingle
+    ? {
+      tabCenterSourceId: contextSingle.tabCenterSourceId,
+      isMoreBefore: contextSingle.isMoreBefore,
+      isMoreAfter: contextSingle.isMoreAfter,
+      isLoadingBefore: contextSingle.action === 'loadBefore',
+      isLoadingAfter: contextSingle.action === 'loadAfter',
+      countLoad: store.tabContextCountSide,
+      scrollRequestCount: contextSingle.scrollRequestCount
+    }
+    : null
+
+  // In the window view the sidebar shows match counts, not the tab counts of
+  // the (possibly context-replaced) windows passed in.
+  const countTextByWindowId: Record<string, string> = {}
+  for (const windowItem of store.searchWindowItems) {
+    countTextByWindowId[String(windowItem.windowSourceId)] = String(windowItem.matchCount)
   }
 
-  const rows = isContextVisible && contextSingle
-    ? [
-      {
-        id: contextEdgeRowIdBefore,
-        data: {
-          tab: {
-            direction: 'before',
-            isMore: contextSingle.isMoreBefore,
-            isLoading: contextSingle.action === 'loadBefore',
-            countLoad: store.tabContextCountSide
-          }
-        }
-      },
-      ...contextSingle.items.map((tab) => ({
-        id: String(tab.tabSourceId),
-        rowClassName: tab.tabSourceId === contextSingle.tabCenterSourceId
-          ? 'tab-context-center'
-          : '',
-        data: {
-          tab: {
-            ...tab,
-            matchText: search.textCommitted,
-            contentOffsetLeft: search.contentOffsetLeftById.get(tab.tabSourceId) ?? 0
-          }
-        }
-      })),
-      {
-        id: contextEdgeRowIdAfter,
-        data: {
-          tab: {
-            direction: 'after',
-            isMore: contextSingle.isMoreAfter,
-            isLoading: contextSingle.action === 'loadAfter',
-            countLoad: store.tabContextCountSide
-          }
-        }
-      }
-    ]
-    : itemsVisible.map((tab) => ({
-      id: String(tab.tabSourceId),
-      data: {
-        tab: {
-          ...tab,
-          matchText: search.textCommitted,
-          contentOffsetLeft: search.contentOffsetLeftById.get(tab.tabSourceId) ?? 0
-        }
-      }
-    }))
-
-  const rowIdsSelected = search.visibleSelectedIds.map(String)
+  const contentOffsetLeftById: Record<string, number> = {}
+  for (const [tabSourceId, offsetLeft] of search.contentOffsetLeftById) {
+    contentOffsetLeftById[String(tabSourceId)] = offsetLeft
+  }
 
   return (
     <div className="tab-search-panel">
@@ -298,7 +287,7 @@ export const SearchPanel = observer(function SearchPanel({
         className={`tab-search-field ${search.textInput ? '' : 'tab-search-field-empty'}`}
         // display:none instead of unmounting: the contentEditable field is
         // uncontrolled, so unmounting would lose the entered search text.
-        style={{ display: isAllView ? 'none' : undefined }}
+        style={{ display: isWindowsMode ? 'none' : undefined }}
         contentEditable={!isActionBusy}
         suppressContentEditableWarning
         spellCheck={false}
@@ -314,7 +303,7 @@ export const SearchPanel = observer(function SearchPanel({
         }}
       />
 
-      {!isAllView ? (
+      {!isWindowsMode ? (
       <SearchControlButtonGroup
         store={store}
         compLead={(
@@ -383,8 +372,8 @@ export const SearchPanel = observer(function SearchPanel({
       ) : null}
 
       <div className={`tab-search-message tab-search-message-${search.messageStatus}`}>
-        {search.messageText || (isAllView
-          ? getWindowsAllSummaryText(store.windowsAll)
+        {search.messageText || (isWindowsMode
+          ? getWindowsModeSummaryText(store.searchWorkspaceMode, windowsMode)
           : 'Enter text to search open tabs')}
       </div>
 
@@ -396,19 +385,26 @@ export const SearchPanel = observer(function SearchPanel({
         <RemoteUploadPanel store={store} key={store.remote.uploadPanelOpenCount} />
       ) : null}
 
-      {isAllView ? (
+      {isWindowsMode ? (
         <div className="tab-search-results" ref={resultsRef}>
           <WindowTabView
             data={{
-              windows: store.windowsAll,
+              windows: windowsMode,
               windowSourceIdSelected: store.windowSourceIdSelectedAllView,
-              tabIdsSelected: store.tabIdsSelectedAllView
+              tabIdsSelected: store.tabIdsSelectedAllView,
+              contentOffsetLeftById
             }}
             config={{
               isBusy: isActionBusy,
-              bodyHeight: 260,
-              sidebarHeightPx: 260,
-              colWidthById: store.getFolderColWidthById('search-all')
+              viewMode: 'item',
+              // active/selected/pinned status marks are hidden here: 'All
+              // Windows' shows entire windows and 'Selected Tabs' shows only
+              // selected tabs, so the marks carry no useful information
+              isTabStatusVisible: false,
+              bodyHeight: resultsHeightPx === null
+                ? 260
+                : resultsHeightPx - windowTabStatusBarHeightPx,
+              sidebarHeightPx: resultsHeightPx ?? 260
             }}
             onEvent={(eventType, eventData) => {
               if (eventType === 'windowSourceIdSelectedChange') {
@@ -435,131 +431,61 @@ export const SearchPanel = observer(function SearchPanel({
                   openTabRowMenu(Number(eventData.tabSourceId), mouseEvent)
                 }
               }
-              if (eventType === 'colWidthByIdChange') {
-                store.setFolderColWidthById(
-                  'search-all',
-                  eventData.colWidthById as Record<string, number>
+              if (eventType === 'tabContentOffsetChange') {
+                search.setContentOffsetLeft(
+                  Number(eventData.tabSourceId),
+                  Number(eventData.offsetLeft)
                 )
               }
+              return undefined
             }}
           />
         </div>
       ) : (
       <div className="tab-search-results" ref={resultsRef}>
-        {isWindowView ? (
-          <WindowSidebar
-            data={{
-              windows: store.searchWindowItems.map((windowItem) => {
-                const labelText = `Window ${windowItem.windowIndex + 1}`
-                return {
-                  windowSourceId: windowItem.windowSourceId,
-                  labelText,
-                  countText: String(windowItem.matchCount),
-                  titleText: `${labelText}, ${windowItem.matchCount} matched tab${windowItem.matchCount === 1 ? '' : 's'}`,
-                  isInContext: search.contextByWindowId.has(windowItem.windowSourceId)
-                }
-              }),
-              windowSourceIdSelected
-            }}
-            config={{ isBusy: isActionBusy, heightPx: 260 }}
-            onEvent={(eventType, eventData) => {
-              if (eventType === 'windowSourceIdSelectedChange') {
-                store.setSearchWindowSourceIdSelected(Number(eventData.windowSourceId))
-              }
-              if (eventType === 'windowContextMenu') {
-                openWindowRowMenu(
-                  Number(eventData.windowSourceId),
-                  eventData.event as MouseEvent
-                )
-              }
-            }}
-          />
-        ) : null}
-        <FolderView
+        <WindowTabView
           data={{
-            columns: {
-              tab: { data: 'Tabs', align: 'left' }
-            },
-            colsOrder: ['tab'],
-            rows,
-            rowIdsSelected,
-            viewCurrent: 'list',
-            statusBar: {
-              itemCount: search.resultTotal,
-              messageState: null
-            }
+            windows: windowsSearch,
+            windowSourceIdSelected,
+            tabIdsSelected: search.visibleSelectedIds.map(String),
+            matchText: search.textCommitted,
+            contentOffsetLeftById,
+            countTextByWindowId,
+            windowIdsInContext: [...search.contextByWindowId.keys()],
+            context: contextView
           }}
           config={{
-            bodyHeight: 260,
-            colSizeById: {
-              tab: { width: 560, minWidth: 140, resizable: false }
-            },
-            isLastColFilled: true,
-            isListOnly: true,
+            isBusy: isActionBusy,
+            viewMode: 'item',
+            isSidebarVisible: isWindowView,
+            isTabCloseVisible: true,
             isStatusBarVisible: false,
-            isLocked: isActionBusy,
-            isRowReorderAllowed: false,
-            selectionMode: 'multiple',
-            compBodyByColId: (colId: string, rowId: string) => {
-              if (colId !== 'tab') return undefined
-              if (rowId === contextEdgeRowIdBefore || rowId === contextEdgeRowIdAfter) {
-                return TabContextEdge
-              }
-              return SearchTabCell
-            }
+            bodyHeight: 260,
+            sidebarHeightPx: 260
           }}
-          onEvent={async (eventType, eventData) => {
-            // Click selection follows the FolderView multi-select example via
-            // rowInteraction. Built-in rowIdsSelectedChange is only used to
-            // clear the selection when clicking empty space.
-            if (eventType === 'rowInteraction') {
-              const rowId = String(eventData.rowId ?? '')
-              if (
-                rowId === contextEdgeRowIdBefore ||
-                rowId === contextEdgeRowIdAfter
-              ) {
-                return { code: 0 }
-              }
-              if (eventData.type === 'click') {
-                applyTabRowClickSelect(
-                  rowId,
-                  (eventData.modifiers as {
-                    ctrl?: boolean
-                    meta?: boolean
-                    shift?: boolean
-                  }) ?? {}
-                )
-              }
-              if (eventData.type === 'context-menu') {
-                const tabSourceId = Number(rowId)
-                if (
-                  Number.isInteger(tabSourceId) &&
-                  !search.visibleSelectedIds.includes(tabSourceId)
-                ) {
-                  setVisibleSelectedIds([tabSourceId])
-                }
-              }
+          onEvent={(eventType, eventData) => {
+            if (eventType === 'windowSourceIdSelectedChange') {
+              store.setSearchWindowSourceIdSelected(Number(eventData.windowSourceId))
             }
-            if (eventType === 'rowIdsSelectedChange') {
-              const rowIds = (eventData.rowIdsSelected as string[] | undefined) ?? []
-              if (rowIds.length === 0) setVisibleSelectedIds([])
+            if (eventType === 'windowContextMenu') {
+              openWindowRowMenu(
+                Number(eventData.windowSourceId),
+                eventData.event as MouseEvent
+              )
             }
-            if (eventType === 'rowClick') {
-              if (eventData.rowId === contextEdgeRowIdBefore) void loadMoreTabContext('before')
-              if (eventData.rowId === contextEdgeRowIdAfter) void loadMoreTabContext('after')
+            if (eventType === 'tabIdsSelectedChange') {
+              setVisibleSelectedIds(
+                [...(eventData.tabIds as string[] ?? [])].map(Number)
+              )
             }
-            if (eventType === 'rowDoubleClick') {
-              const tabSourceId = Number(eventData.rowId)
-              if (Number.isInteger(tabSourceId)) {
-                store.runTabSearchAction('activate', tabSourceId)
-              }
+            if (eventType === 'tabRowDoubleClick') {
+              void store.runTabSearchAction('activate', Number(eventData.tabSourceId))
             }
-            if (eventType === 'rowContextMenu') {
+            if (eventType === 'tabRowContextMenu') {
               const mouseEvent = eventData.event as MouseEvent | undefined
               mouseEvent?.preventDefault()
-              const tabSourceId = Number(eventData.rowId)
-              if (mouseEvent && Number.isInteger(tabSourceId)) {
-                openTabRowMenu(tabSourceId, mouseEvent)
+              if (mouseEvent) {
+                openTabRowMenu(Number(eventData.tabSourceId), mouseEvent)
               } else {
                 setTabRowMenu(null)
               }
@@ -573,12 +499,15 @@ export const SearchPanel = observer(function SearchPanel({
                 Number(eventData.offsetLeft)
               )
             }
-            return { code: 0 }
+            if (eventType === 'contextLoadMoreAttempt') {
+              return loadMoreTabContext(eventData.direction as 'before' | 'after')
+            }
+            return undefined
           }}
         />
       </div>
       )}
-      {!isContextMode && search.isMore ? (
+      {!isWindowsMode && !isContextMode && search.isMore ? (
         <button
           type="button"
           className="tab-search-load-more"
@@ -707,16 +636,53 @@ export const SearchPanel = observer(function SearchPanel({
   )
 })
 
-function getWindowsAllSummaryText(windows: Array<{ tabs: unknown[] }>) {
+// Group flat search items into the shared windows-tree shape, keeping the
+// item order inside each window and the window order of first appearance.
+function getWindowsOfItems(items: TabSearchItem[]): SnapshotWindowData[] {
+  const windowById = new Map<number, SnapshotWindowData>()
+  for (const item of items) {
+    let windowItem = windowById.get(item.windowSourceId)
+    if (!windowItem) {
+      windowItem = {
+        windowSourceId: item.windowSourceId,
+        windowIndex: item.windowIndex,
+        isFocused: item.isWindowFocused,
+        tabs: [],
+        groups: []
+      }
+      windowById.set(item.windowSourceId, windowItem)
+    }
+    windowItem.tabs.push({
+      tabSourceId: item.tabSourceId,
+      tabIndex: item.tabIndex,
+      title: item.title,
+      url: item.url,
+      favIconUrl: item.favIconUrl,
+      isActive: item.isActive,
+      isSelected: item.isSelected,
+      isPinned: item.isPinned,
+      groupSourceId: item.groupSourceId ?? null
+    })
+  }
+  return [...windowById.values()]
+}
+
+function getWindowsModeSummaryText(
+  mode: string,
+  windows: Array<{ tabs: unknown[] }>
+) {
   const tabCount = windows.reduce((count, windowItem) => count + windowItem.tabs.length, 0)
+  if (mode === 'selected') {
+    return `${tabCount} selected tab${tabCount === 1 ? '' : 's'} in ${windows.length} window${windows.length === 1 ? '' : 's'}`
+  }
   return `${windows.length} window${windows.length === 1 ? '' : 's'}, ${tabCount} tab${tabCount === 1 ? '' : 's'}`
 }
 
 // Menu items depend on the selection: the "before/after it" pair needs one
 // selected tab (the right-clicked one); the "before/after current tab" and
 // "before/after a target tab" pair takes any selection as the source tabs.
-// tabsSelected comes in the common TabMenuTab shape, so the search results
-// and the all-windows view share this menu.
+// tabsSelected comes in the common TabMenuTab shape, so every panel mode
+// shares this menu.
 function getTabRowMenuItems(
   tabsSelected: TabMenuTab[],
   remote: PopupStore['remote'],

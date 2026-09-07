@@ -128,6 +128,13 @@
   overflow: hidden;
 }
 
+/* Search results and the windows modes render through the shared
+   WindowTabView; it fills the results row the same way. */
+.tab-search-results > .window-tab-view {
+  min-width: 0;
+  flex: 1;
+}
+
 /* View switcher inside the control button track */
 .tab-search-view-switch {
   flex: 0 0 auto;

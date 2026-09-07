@@ -7,7 +7,7 @@
 Tab Cloud stores tabs remotely. The extension talks to a backend server, the backend stores data in AWS DynamoDB, and a char-level index (Elasticsearch, deployed on local network devices) serves substring search over title/url.
 
 ```text
-extension popup('Remote' tab, upload panels in 'Search' tab)
+extension popup('Remote' tab, upload confirm popup from 'Search' tab)
   -> backend server (python)
        -> dynamodb                          # the source of truth
        -> char-level index (elasticsearch)  # search only, rebuildable from dynamodb
@@ -446,6 +446,12 @@ missing or failed latest required check
 ```
 
 The popup fetches cached checks after loading a saved login and after login.
+The cache lives in backend-process memory, so a freshly started backend (for
+example an aws lambda cold start) reports no checks right after login even
+when the tables and index are fine. When the required checks are missing from
+the fetched history, the popup calls `/api/status` once — it runs and records
+both config checks — and fetches the history again, so the upload menu items
+are usable right after login without visiting the settings panel.
 Upload entry points, including right-click menu items and the final Apply
 action, use the same readiness state. The cloud settings panel has separate
 DynamoDB Tables, Search Index, and Check History tabs.
@@ -498,23 +504,36 @@ Everything is driven by the remote MobX store: server data (windows, tabs, tags)
 
 ### Upload from the Search tab
 
-Uploading uses the right-click menu of the local Search tab plus an inline panel:
+Uploading uses the right-click menu of the local Search tab plus a confirm popup:
 
 ```text
 right-click menu
   ├─ Upload selected tab(s) to remote
   └─ Upload this window to remote
 
-upload panel
-  ├─ list of tabs to upload
+upload confirm popup
+  ├─ list of tabs to upload, each row showing its own upload state
   ├─ target: remote window selector (default: the default remote window)
-  ├─ [x] close uploaded tabs on success   # default on
-  └─ Apply / Cancel
+  ├─ [x] close each uploaded tab after its upload is confirmed   # default on
+  ├─ progress line (uploaded / failed counts) while the run is active
+  └─ Upload / Stop / Cancel
 ```
 
-The upload is one batch api call in one backend transaction. Local tabs are closed only after the backend confirms success, and only when the checkbox is on.
+Tabs upload one by one, each in its own api call, so partial failure is allowed: a failed tab is marked with its error and does not block the remaining tabs. A tab is closed right after the backend confirms its own upload (when the checkbox is on), never in a batch at the end, so a browser crash in the middle loses no tab that is not stored remotely yet.
 
-If the target is left as the default remote window, and no live default window exists yet (first upload, or the stored default is unset / trashed / gone), the backend creates a window titled `default`, stores it as `windowDefaultId`, and uploads the tabs into it. The created window is committed in the same transaction as the tabs.
+```text
+for each tab in the panel list      # tabs keep their select order
+  -> stop requested? break here
+  -> /api/tab/create with this one tab
+  -> success: mark the row uploaded
+       -> close the local tab when the checkbox is on
+  -> failure: mark the row failed with the message
+       -> continue with the next tab
+```
+
+While the run is active, the confirm popup stays open and the rest of the ui is locked behind its backdrop; the user waits for the run and only a Stop button stays usable. Clicking the backdrop closes the popup when idle, not while the run is active. Stop breaks the run after the tab currently being processed completes its full logic (success or fail). The result counts (uploaded / failed / not attempted) land in the search message line; a partially failed or stopped run keeps the popup open, and Upload then retries exactly the tabs that are not uploaded yet.
+
+The first successful upload decides the target window when none is chosen; every later tab goes to that same window. If the target is left as the default remote window, and no live default window exists yet (first upload, or the stored default is unset / trashed / gone), the backend creates a window titled `default`, stores it as `windowDefaultId`, and uploads the tab into it. The created window is committed in the same transaction as that first tab.
 
 ### Remote window selector
 

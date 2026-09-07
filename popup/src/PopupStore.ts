@@ -102,7 +102,7 @@ export const recoveryReplayTargetDefault: RecoveryReplayTarget = {
 export const tabContextCountSideDefault = 10
 export const recoveryEventColCountDefault = 2
 
-export type SearchWorkspaceMode = 'search' | 'all'
+export type SearchWorkspaceMode = 'search' | 'all' | 'selected'
 export type TabSearchViewMode = 'list' | 'window'
 export const tabSearchViewModeDefault: TabSearchViewMode = 'list'
 
@@ -338,7 +338,7 @@ export class PopupStore {
       this.tabSearch.queueSearchRefresh()
       this.tabSearch.queueContextRefresh()
       this.tabBring?.search.queueSearchRefresh()
-      if (this.searchWorkspaceMode === 'all') this.queueWindowsAllRefresh()
+      if (this.isWindowsAllUsed) this.queueWindowsAllRefresh()
     }
     return false
   }
@@ -410,12 +410,15 @@ export class PopupStore {
     const result = await this.remote.applyUpload()
     runInAction(() => {
       this.tabSearch.setMessage(result.isOk ? 'success' : 'error', result.messageText)
+      // a partially failed or stopped run keeps the panel open, showing which
+      // tabs failed and offering a retry of exactly those tabs
       if (result.isOk) this.remote.closeUploadPanel()
     })
-    if (result.isOk) {
-      if (this.tabSearch.isContextMode) await this.tabSearch.refreshContexts()
-      if (this.tabSearch.textCommitted) await this.tabSearch.search(true)
-    }
+    // tabs may have been closed even when the run was stopped or partially
+    // failed, so the views refresh in every outcome
+    if (this.tabSearch.isContextMode) await this.tabSearch.refreshContexts()
+    if (this.tabSearch.textCommitted) await this.tabSearch.search(true)
+    if (this.isWindowsAllUsed) this.queueWindowsAllRefresh()
     return result.isOk
   }
 
@@ -468,13 +471,52 @@ export class PopupStore {
     }
   }
 
+  // The 'all' and 'selected' modes both render the live windows tree loaded
+  // into windowsAll; 'selected' only shows the browser-selected (highlighted)
+  // tabs of each window.
+  get isWindowsAllUsed() {
+    return this.searchWorkspaceMode === 'all' || this.searchWorkspaceMode === 'selected'
+  }
+
+  // Windows of the 'selected' mode: each window reduced to its selected tabs.
+  // The active tab of a window is always selected (refer to
+  // /doc/browser_state.md, Multi-tab selection), so normally every window
+  // shows at least its active tab.
+  get windowsSelectedTabs(): SnapshotWindowData[] {
+    return this.windowsAll
+      .map((windowItem) => ({
+        ...windowItem,
+        tabs: windowItem.tabs.filter((tab) => tab.isSelected)
+      }))
+      .filter((windowItem) => windowItem.tabs.length > 0)
+  }
+
+  // The windows tree the current panel mode displays.
+  get windowsWorkspaceVisible(): SnapshotWindowData[] {
+    return this.searchWorkspaceMode === 'selected' ? this.windowsSelectedTabs : this.windowsAll
+  }
+
   setSearchWorkspaceMode(mode: unknown) {
-    this.searchWorkspaceMode = mode === 'all' ? 'all' : 'search'
+    this.searchWorkspaceMode = mode === 'all'
+      ? 'all'
+      : mode === 'selected' ? 'selected' : 'search'
     // Entering full display selects the window that currently holds the
     // focused tab, so the sidebar starts on the window the user was in.
-    if (this.searchWorkspaceMode === 'all') {
+    if (this.isWindowsAllUsed) {
       void this.loadWindowsAll({ isSelectFocusedWindow: true })
     }
+  }
+
+  // The 'selected' mode exists to upload or act on the browser-selected tabs
+  // in one run, so entering the mode and switching windows there selects
+  // every shown tab instead of clearing the selection.
+  selectAllTabsSelectedMode() {
+    const windowShown = this.windowsSelectedTabs.find(
+      (windowItem) => windowItem.windowSourceId === this.windowSourceIdSelectedAllView
+    ) ?? this.windowsSelectedTabs[0]
+    this.tabIdsSelectedAllView = (windowShown?.tabs ?? []).map(
+      (tab) => String(tab.tabSourceId)
+    )
   }
 
   queueWindowsAllRefresh() {
@@ -528,6 +570,7 @@ export class PopupStore {
         if (options.isSelectFocusedWindow === true) {
           this.windowSourceIdSelectedAllView = windowFocusedSourceId
           this.tabIdsSelectedAllView = []
+          if (this.searchWorkspaceMode === 'selected') this.selectAllTabsSelectedMode()
           return
         }
         const isSelectedPresent = this.windowsAll.some(
@@ -536,6 +579,7 @@ export class PopupStore {
         if (!isSelectedPresent) {
           this.windowSourceIdSelectedAllView = windowFocusedSourceId
           this.tabIdsSelectedAllView = []
+          if (this.searchWorkspaceMode === 'selected') this.selectAllTabsSelectedMode()
         }
       })
       return true
@@ -554,6 +598,10 @@ export class PopupStore {
   setWindowSourceIdSelectedAllView(windowSourceId: number) {
     if (this.windowSourceIdSelectedAllView === windowSourceId) return
     this.windowSourceIdSelectedAllView = windowSourceId
+    if (this.searchWorkspaceMode === 'selected') {
+      this.selectAllTabsSelectedMode()
+      return
+    }
     // Same rule as the snapshot window sidebar: a window switch drops the tab
     // selection, so the selection never refers to tabs that are not visible.
     this.tabIdsSelectedAllView = []
@@ -597,7 +645,7 @@ export class PopupStore {
       })
       if (!response?.success) throw new Error(response?.error ?? 'Window closing failed')
       this.tabSearch.setMessage('success', 'Window closed')
-      if (this.searchWorkspaceMode === 'all') this.queueWindowsAllRefresh()
+      if (this.isWindowsAllUsed) this.queueWindowsAllRefresh()
       if (this.tabSearch.isContextMode) await this.tabSearch.refreshContexts()
       if (this.tabSearch.textCommitted) await this.tabSearch.search(true)
       return true
