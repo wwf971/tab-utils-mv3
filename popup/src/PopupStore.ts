@@ -14,6 +14,13 @@ import {
 import { TabBringCore, type TabBringRef } from './TabBringCore'
 import { RemoteStore, type RemoteUploadTab } from './remote/RemoteStore'
 
+// One tab as the clipboard copy operations see it (refer to copyTabsText).
+export interface TabCopyItem {
+  tabSourceId: number
+  title: string
+  url: string
+}
+
 export interface RetentionTier {
   ageMaxMinute: number | null
   spacingMinMinute: number
@@ -205,6 +212,14 @@ export class PopupStore {
   windowsAll: SnapshotWindowData[] = []
   isWindowsAllLoading = false
   windowsAllRefreshTimeoutId: ReturnType<typeof setTimeout> | null = null
+  // Entering 'all'/'selected' keeps the heavy windows tree unmounted until the
+  // initial load finishes; the panel shows a spinning circle in its place, so
+  // the popup never appears frozen (refer to SearchPanel).
+  isWindowsAllEnterPending = false
+  // Target of an in-flight window switch inside the 'all'/'selected' modes.
+  // The switch commits after one painted spinner frame (refer to
+  // setWindowSourceIdSelectedAllView).
+  windowSourceIdPendingAllView: number | null = null
   // Window and tab rows chosen in the 'all' view.
   windowSourceIdSelectedAllView: number | null = null
   tabIdsSelectedAllView: string[] = []
@@ -503,7 +518,15 @@ export class PopupStore {
     // Entering full display selects the window that currently holds the
     // focused tab, so the sidebar starts on the window the user was in.
     if (this.isWindowsAllUsed) {
-      void this.loadWindowsAll({ isSelectFocusedWindow: true })
+      // The heavy windows tree mounts only after this load finishes. The load
+      // is an async round trip to the background, so the spinner shown in the
+      // meantime is painted before the blocking mount starts.
+      this.isWindowsAllEnterPending = true
+      void this.loadWindowsAll({ isSelectFocusedWindow: true }).finally(() => {
+        runInAction(() => {
+          this.isWindowsAllEnterPending = false
+        })
+      })
     }
   }
 
@@ -595,7 +618,28 @@ export class PopupStore {
     }
   }
 
+  // A window switch first paints one spinner frame, then commits: rendering a
+  // large window's tab list can block the popup for a while, and the painted
+  // spinner (a composited animation) keeps spinning through that block.
   setWindowSourceIdSelectedAllView(windowSourceId: number) {
+    if (
+      this.windowSourceIdPendingAllView === null &&
+      this.windowSourceIdSelectedAllView === windowSourceId
+    ) return
+    this.windowSourceIdPendingAllView = windowSourceId
+    // Double rAF: the first callback runs before the spinner frame is painted,
+    // the second runs one frame later, after that paint.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        this.commitWindowSwitchAllView()
+      })
+    })
+  }
+
+  commitWindowSwitchAllView() {
+    const windowSourceId = this.windowSourceIdPendingAllView
+    if (windowSourceId === null) return
+    this.windowSourceIdPendingAllView = null
     if (this.windowSourceIdSelectedAllView === windowSourceId) return
     this.windowSourceIdSelectedAllView = windowSourceId
     if (this.searchWorkspaceMode === 'selected') {
@@ -621,8 +665,7 @@ export class PopupStore {
       const windows = (response.result?.windows ?? []) as SnapshotWindowData[]
       const windowItem = windows.find((item) => item.windowSourceId === windowSourceId)
       if (!windowItem) throw new Error('The window no longer exists')
-      const text = windowItem.tabs.map((tab) => `${tab.url} | ${tab.title}`).join('\n')
-      await navigator.clipboard.writeText(text)
+      await navigator.clipboard.writeText(getTabsClipboardText(windowItem.tabs))
       this.tabSearch.setMessage(
         'success',
         `Copied ${windowItem.tabs.length} tab${windowItem.tabs.length === 1 ? '' : 's'} of Window ${windowItem.windowIndex + 1}`
@@ -632,6 +675,43 @@ export class PopupStore {
       this.tabSearch.setMessage('error', getErrorText(error))
       return false
     }
+  }
+
+  // Copy the given tabs into the clipboard, one '{url} | {title}' line per
+  // tab, the same line format as the window-menu copy (refer to
+  // /doc/import_export.md).
+  async copyTabsText(tabs: TabCopyItem[]) {
+    try {
+      if (tabs.length === 0) throw new Error('Select at least one tab to copy')
+      await navigator.clipboard.writeText(getTabsClipboardText(tabs))
+      this.tabSearch.setMessage(
+        'success',
+        `Copied ${tabs.length} tab${tabs.length === 1 ? '' : 's'}`
+      )
+      return true
+    } catch (error) {
+      this.tabSearch.setMessage('error', getErrorText(error))
+      return false
+    }
+  }
+
+  // Copy the given tabs, then close exactly the copied tabs. The close runs
+  // only after the clipboard write succeeded, so a failed copy never loses
+  // tabs.
+  async copyTabsTextThenClose(tabs: TabCopyItem[]) {
+    const isCopied = await this.copyTabsText(tabs)
+    if (!isCopied) return false
+    const isClosed = await this.runTabSearchAction(
+      'close',
+      tabs.map((tab) => tab.tabSourceId)
+    )
+    if (isClosed) {
+      this.tabSearch.setMessage(
+        'success',
+        `Copied and closed ${tabs.length} tab${tabs.length === 1 ? '' : 's'}`
+      )
+    }
+    return isClosed
   }
 
   // Close one entire window with all of its tabs.
@@ -688,13 +768,15 @@ export class PopupStore {
 
   async runTabSearchAction(
     operation: 'activate' | 'close' | 'moveLeft' | 'moveRight' | 'duplicateLeft' | 'duplicateRight',
-    tabSourceIdInput?: number
+    tabSourceIdInput?: number | number[]
   ) {
     const search = this.tabSearch
     // Close acts on every selected tab in one run. Other operations act on one tab.
-    const tabSourceIds = tabSourceIdInput !== undefined
-      ? [tabSourceIdInput]
-      : [...search.visibleSelectedIds]
+    const tabSourceIds = Array.isArray(tabSourceIdInput)
+      ? [...tabSourceIdInput]
+      : tabSourceIdInput !== undefined
+        ? [tabSourceIdInput]
+        : [...search.visibleSelectedIds]
     const tabSourceId = tabSourceIds[0]
     if (!Number.isInteger(tabSourceId) || search.isBusy) return false
     search.setSearchAction(operation)
@@ -715,6 +797,7 @@ export class PopupStore {
         })
         if (search.isContextMode) await search.refreshContexts()
         await search.search(true)
+        if (this.isWindowsAllUsed) this.queueWindowsAllRefresh()
       }
       return true
     } catch (error) {
@@ -1576,6 +1659,12 @@ function toPlainClone<T>(value: T): T {
 
 function getErrorText(error: unknown) {
   return error instanceof Error ? error.message : String(error)
+}
+
+// One clipboard line per tab, the format documented in /doc/import_export.md.
+// Shared by the window-menu copy and the tab-menu copy.
+function getTabsClipboardText(tabs: Array<{ url: string, title: string }>) {
+  return tabs.map((tab) => `${tab.url} | ${tab.title}`).join('\n')
 }
 
 function getSearchViewModeValid(value: unknown): TabSearchViewMode {

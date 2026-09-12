@@ -21,6 +21,8 @@ All modes and views render through the shared `WindowTabView` component of `@wwf
 
 `All Windows` and `Selected Tabs` read one live windows tree (`windowsAll`), refreshed on background change notices; `Selected Tabs` reduces each window to its selected tabs. The active tab of a window counts as selected (refer to [Live browser state](./browser_state.md), Multi-tab selection), so a window without an explicit multi-selection shows its active tab. Both modes start on the window the user was in before opening the popup. Entering `Selected Tabs` and switching windows there selects every shown tab, so the usual flow — select tabs in the browser, open the popup, right-click, upload — needs no re-selection in the table; in `All Windows` a window switch drops the tab selection instead, like the snapshot window sidebar.
 
+Mounting the tab list of a large window blocks the popup for a moment, so entering these modes and switching windows inside them never render the heavy list right away. A spinning circle is painted first — replacing the list on mode entry, laid over it on a window switch — and the list renders one frame later. The spinner animation is composited (refer to `SpinningCircle` of `react-comp-misc`), so it keeps spinning while the blocking render runs.
+
 ### Search result views
 
 The result area has two views, switched by a segmented control at the start of the button group:

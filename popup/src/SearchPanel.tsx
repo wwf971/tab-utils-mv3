@@ -8,7 +8,8 @@ import { observer } from 'mobx-react-lite'
 import {
   FileIcon,
   MenuComp,
-  SegmentedControl
+  SegmentedControl,
+  SpinningCircle
 } from '@wwf971/react-comp-misc'
 import {
   TabItem,
@@ -387,6 +388,17 @@ export const SearchPanel = observer(function SearchPanel({
 
       {isWindowsMode ? (
         <div className="tab-search-results" ref={resultsRef}>
+          {store.isWindowsAllEnterPending ? (
+            // The heavy windows tree stays unmounted while the mode-enter load
+            // runs; this spinner frame is painted before the blocking mount,
+            // and its composited animation keeps spinning through that mount.
+            <div
+              className="tab-search-results-loading"
+              style={{ height: resultsHeightPx ?? 260 }}
+            >
+              <SpinningCircle width={20} height={20} />
+            </div>
+          ) : (
           <WindowTabView
             data={{
               windows: windowsMode,
@@ -440,6 +452,15 @@ export const SearchPanel = observer(function SearchPanel({
               return undefined
             }}
           />
+          )}
+          {!store.isWindowsAllEnterPending && store.windowSourceIdPendingAllView !== null ? (
+            // A window switch commits one frame after this overlay is painted
+            // (refer to PopupStore.setWindowSourceIdSelectedAllView), so the
+            // spinner is on screen through the blocking tab-list re-render.
+            <div className="tab-search-results-loading-overlay">
+              <SpinningCircle width={20} height={20} />
+            </div>
+          ) : null}
         </div>
       ) : (
       <div className="tab-search-results" ref={resultsRef}>
@@ -569,15 +590,21 @@ export const SearchPanel = observer(function SearchPanel({
               if (item?.id === 'bring-to-target') {
                 void store.openTabBring({ pickSide: 'target', tabsSourceFixed })
               }
+              // Tabs copy and upload in the order they were selected, not in
+              // row order.
+              const tabsSelectOrder = tabsMenuSelectedSelectOrder.map((tab) => ({
+                tabSourceId: tab.tabSourceId,
+                title: tab.title,
+                url: tab.url
+              }))
+              if (item?.id === 'copy-selected-tabs') {
+                void store.copyTabsText(tabsSelectOrder)
+              }
+              if (item?.id === 'copy-close-selected-tabs') {
+                void store.copyTabsTextThenClose(tabsSelectOrder)
+              }
               if (item?.id === 'upload-selected-to-remote') {
-                // Tabs upload in the order they were selected, not in row order.
-                store.openRemoteUploadForTabs(
-                  tabsMenuSelectedSelectOrder.map((tab) => ({
-                    tabSourceId: tab.tabSourceId,
-                    title: tab.title,
-                    url: tab.url
-                  }))
-                )
+                store.openRemoteUploadForTabs(tabsSelectOrder)
               }
               if (item?.id === 'upload-window-to-remote') {
                 const tabClicked = tabMenuFind(tabRowMenu.tabSourceId)
@@ -722,6 +749,16 @@ function getTabRowMenuItems(
     {
       id: 'bring-to-target',
       label: 'Bring it before/after a target tab'
+    },
+    {
+      id: 'copy-selected-tabs',
+      label: `Copy selected tab(s) as "url | title" lines (${tabsSelected.length})`,
+      isDisabled: tabsSelected.length === 0
+    },
+    {
+      id: 'copy-close-selected-tabs',
+      label: `Copy selected tab(s), close on success (${tabsSelected.length})`,
+      isDisabled: tabsSelected.length === 0
     },
     {
       id: 'upload-selected-to-remote',

@@ -114,11 +114,33 @@
 }
 
 .tab-search-results {
+  /* relative: anchors the window-switch spinner overlay */
+  position: relative;
   display: flex;
   width: 100%;
   min-width: 0;
   gap: 4px;
   user-select: none;
+}
+
+/* Spinner shown instead of the windows tree while a windows mode loads */
+.tab-search-results-loading {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Spinner shown over the tabs while a window switch waits for its commit
+   frame (refer to PopupStore.setWindowSourceIdSelectedAllView) */
+.tab-search-results-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.55);
 }
 
 /* The result table fills the space right of the optional window sidebar. */
