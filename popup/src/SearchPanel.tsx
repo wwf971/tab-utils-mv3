@@ -21,6 +21,7 @@ import {
 import { PopupStore } from './PopupStore'
 import { type TabSearchItem } from './TabSearchCore'
 import { TabBringPanel } from './TabBringPanel'
+import { CurrentTabPanel } from './CurrentTabPanel'
 import { RemoteUploadPanel } from './remote/RemoteUploadPanel'
 import {
   getSearchFieldText,
@@ -123,6 +124,8 @@ export const SearchPanel = observer(function SearchPanel({
   // search result views. Both render the windows tree kept in windowsAll.
   const isWindowsMode = store.searchWorkspaceMode === 'all' ||
     store.searchWorkspaceMode === 'selected'
+  // 'Current Tab' mode: only the active tab, uploaded to remote with tags.
+  const isCurrentMode = store.searchWorkspaceMode === 'current'
   const windowSourceIdSelected = isWindowView ? store.searchWindowSourceIdEffective : null
   const isContextVisible = isContextMode && contextSingle !== null &&
     (!isWindowView || contextSingle.windowSourceId === windowSourceIdSelected)
@@ -288,7 +291,7 @@ export const SearchPanel = observer(function SearchPanel({
         className={`tab-search-field ${search.textInput ? '' : 'tab-search-field-empty'}`}
         // display:none instead of unmounting: the contentEditable field is
         // uncontrolled, so unmounting would lose the entered search text.
-        style={{ display: isWindowsMode ? 'none' : undefined }}
+        style={{ display: isWindowsMode || isCurrentMode ? 'none' : undefined }}
         contentEditable={!isActionBusy}
         suppressContentEditableWarning
         spellCheck={false}
@@ -304,7 +307,7 @@ export const SearchPanel = observer(function SearchPanel({
         }}
       />
 
-      {!isWindowsMode ? (
+      {!isWindowsMode && !isCurrentMode ? (
       <SearchControlButtonGroup
         store={store}
         compLead={(
@@ -373,9 +376,11 @@ export const SearchPanel = observer(function SearchPanel({
       ) : null}
 
       <div className={`tab-search-message tab-search-message-${search.messageStatus}`}>
-        {search.messageText || (isWindowsMode
-          ? getWindowsModeSummaryText(store.searchWorkspaceMode, windowsMode)
-          : 'Enter text to search open tabs')}
+        {search.messageText || (isCurrentMode
+          ? 'Upload the currently active tab to remote with tags'
+          : isWindowsMode
+            ? getWindowsModeSummaryText(store.searchWorkspaceMode, windowsMode)
+            : 'Enter text to search open tabs')}
       </div>
 
       {store.tabBring ? (
@@ -386,7 +391,9 @@ export const SearchPanel = observer(function SearchPanel({
         <RemoteUploadPanel store={store} key={store.remote.uploadPanelOpenCount} />
       ) : null}
 
-      {isWindowsMode ? (
+      {isCurrentMode ? (
+        <CurrentTabPanel store={store} />
+      ) : isWindowsMode ? (
         <div className="tab-search-results" ref={resultsRef}>
           {store.isWindowsAllEnterPending ? (
             // The heavy windows tree stays unmounted while the mode-enter load
@@ -528,7 +535,7 @@ export const SearchPanel = observer(function SearchPanel({
         />
       </div>
       )}
-      {!isWindowsMode && !isContextMode && search.isMore ? (
+      {!isWindowsMode && !isCurrentMode && !isContextMode && search.isMore ? (
         <button
           type="button"
           className="tab-search-load-more"
@@ -763,12 +770,12 @@ function getTabRowMenuItems(
     {
       id: 'upload-selected-to-remote',
       label: `Upload selected tab(s) to remote (${tabsSelected.length})`,
-      isDisabled: tabsSelected.length === 0 || !remote.isUploadAllowed
+      isDisabled: tabsSelected.length === 0 || !remote.isLoggedIn
     },
     {
       id: 'upload-window-to-remote',
       label: 'Upload this window to remote',
-      isDisabled: !remote.isUploadAllowed
+      isDisabled: !remote.isLoggedIn
     }
   )
   return items

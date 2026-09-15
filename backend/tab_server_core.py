@@ -27,7 +27,8 @@ import tab_server_check as config_check
 import tab_server_db as db
 
 
-BATCH_MAX = 40  # one dynamodb transaction holds at most 100 items
+TRANSACT_ITEM_MAX = 100  # one dynamodb transaction holds at most 100 items
+BATCH_MAX = 40
 
 CODE_FAIL = -1
 CODE_AUTH = -2
@@ -61,6 +62,8 @@ def ok(data=None, message=None):
 
 def read_id_list(body, name, is_required=True):
 	id_list = body.get(name)
+	if id_list is None and not is_required:
+		return []
 	if not isinstance(id_list, list) or (is_required and len(id_list) == 0):
 		raise ApiError(CODE_INVALID, f"{name} is required")
 	if len(id_list) > BATCH_MAX:
@@ -289,6 +292,15 @@ def api_tab_create(user_id, body):
 	if len(tab_input_list) > BATCH_MAX:
 		raise ApiError(CODE_INVALID, f"tabList exceeds the batch limit of {BATCH_MAX}")
 
+	# optional tags applied to every created tab. each (tab, tag) pair adds an
+	# attach entry + a history record to the transaction, so the pair count is
+	# capped to stay below the transaction item limit.
+	tag_id_list = read_id_list(body, "tagIdList", is_required=False)
+	for tag_id in tag_id_list:
+		get_tag(user_id, tag_id)  # raises when the tag does not exist
+	if len(tab_input_list) * len(tag_id_list) * 2 > TRANSACT_ITEM_MAX - BATCH_MAX:
+		raise ApiError(CODE_INVALID, "too many (tab, tag) pairs for one transaction")
+
 	changes = []
 	window, meta_change = resolve_target_window(user_id, body, changes)
 
@@ -313,7 +325,7 @@ def api_tab_create(user_id, body):
 			"windowId": window["id"],
 			"title": str(tab_input.get("title") or ""),
 			"url": str(tab_input.get("url") or ""),
-			"tagIdList": [],
+			"tagIdList": list(tag_id_list),
 			"contentRevision": 0,
 			"createAt": db.now_ms(),
 			"createAtTimezone": db.now_timezone_hour(),
@@ -322,6 +334,11 @@ def api_tab_create(user_id, body):
 			tab["groupId"] = group_id
 		tabs_new.append(tab)
 		changes.append(db.change_put("Tab", tab, is_new_key=True))
+		# attach entries of the tag service, in the same transaction as the tab
+		tag_rank = ""
+		for tag_id in tag_id_list:
+			tag_rank = db.tag_rank_between(tag_rank, "")
+			append_tag_attach_changes(user_id, tab, tag_id, tag_rank, changes)
 	if meta_change is not None:
 		changes.append(meta_change)
 
@@ -407,10 +424,6 @@ def api_tab_move(user_id, body):
 			group_check_list.append((db.window_id_of_tab_path(tab["tabPath"]), group_id_old))
 		changes.append(db.change_delete("Tab", db.key_of("Tab", tab), tab))
 		changes.append(db.change_put("Tab", tab_new, is_new_key=True))
-		for relation in db.relation_list_of_tab(tab["id"]):
-			relation_new = {**relation, "tabPath": tab_path_new}
-			changes.append(db.change_delete("TabTag", db.key_of("TabTag", relation), relation))
-			changes.append(db.change_put("TabTag", relation_new, is_new_key=True))
 	append_group_cleanup_changes(user_id, group_check_list, tab_id_moved_set, changes)
 	db.transact_apply(changes)
 	return ok()
@@ -474,11 +487,6 @@ def api_tab_restore(user_id, body):
 		tabs_new.append(tab_new)
 		changes.append(db.change_delete("Tab", db.key_of("Tab", tab), tab))
 		changes.append(db.change_put("Tab", tab_new, is_new_key=True))
-		for relation in db.relation_list_of_tab(tab["id"]):
-			if relation["tabPath"] != tab_path_new:
-				relation_new = {**relation, "tabPath": tab_path_new}
-				changes.append(db.change_delete("TabTag", db.key_of("TabTag", relation), relation))
-				changes.append(db.change_put("TabTag", relation_new, is_new_key=True))
 
 	run_indexed_write(user_id, changes, [tab["id"] for tab in tabs],
 					  lambda: index.doc_put_batch(tabs_new))
@@ -540,11 +548,19 @@ def api_tab_delete_permanent(user_id, body):
 	changes = []
 	for tab in tabs:
 		changes.append(db.change_delete("Tab", db.key_of("Tab", tab), tab))
-		for relation in db.relation_list_of_tab(tab["id"]):
-			changes.append(db.change_delete("TabTag", db.key_of("TabTag", relation), relation))
+		# the tab's attach entries in the tag service's obj-tag table die in
+		# the same transaction, so a tab is never gone with entries left over
+		for entry in db.tab_tag_entry_list_of_tab(user_id, tab["id"]):
+			changes.append(db.change_delete(
+				"ObjTag", {"obj_id": entry["obj_id"], "tag_id": entry["tag_id"]}, entry))
 	tab_id_list = [tab["id"] for tab in tabs]
 	run_indexed_write(user_id, changes, tab_id_list,
 					  lambda: index.doc_delete_batch(tab_id_list))
+	# history record count is unbounded, so the wipe runs after the
+	# transaction; it is idempotent and a crash here leaves only orphan
+	# history records, which nothing reads by tab id anymore
+	for tab in tabs:
+		db.tab_tag_history_wipe(user_id, tab["id"])
 	return ok()
 
 
@@ -584,125 +600,146 @@ def api_trash_window_list(user_id, body):
 
 
 # ---------------------------------------------------------------------------
-# tag apis
+# tab tag apis. tags are entities of the external tag service (aws_oa
+# _3_tag_and_type): the tag entity table and the name index (3_tag) belong to
+# that service, and a tab-has-tag relationship is one attach entry in the
+# service's obj-tag table (obj_id = tab id, gsi_tag_id answers "tabs of a
+# tag"). the tab item's tagIdList stays the denormalized display copy. the
+# attach entries and their obj history records join the same transaction as
+# the tab item changes. tag rename/delete is not offered here for the time
+# being. refer to tab_cloud.md#tags.
 # ---------------------------------------------------------------------------
 
+# assign/remove write 3 items per tab (entry + history + tab item), so their
+# tab batch stays below the 100-item transaction limit
+TAG_BATCH_MAX = 30
+
+
 def get_tag(user_id, tag_id):
-	tag = db.tag_get_by_id(user_id, tag_id)
+	tag = db.tag_get(user_id, tag_id)
 	if not tag:
-		raise ApiError(CODE_NOT_FOUND, "tag not found")
+		raise ApiError(CODE_NOT_FOUND, f"tag not found: {tag_id}")
 	return tag
 
 
-def tag_response(item):
-	return {
-		"id": item["id"],
-		"tagName": item["tagName"],
-		"color": item.get("color"),
-		"createAt": item.get("createAt"),
-		"createAtTimezone": item.get("createAtTimezone"),
+def tag_response(item, match_list=None):
+	response = {
+		"id": item["tag_id"],
+		"name": item["name"],
+		"parentId": item.get("parent_id"),
 	}
+	if match_list is not None:
+		response["matchList"] = match_list
+	return response
 
 
-def api_tag_create(user_id, body):
-	tag_name = str(body.get("tagName") or "").strip()
-	if not tag_name:
-		raise ApiError(CODE_INVALID, "tagName is required")
-	if db.tag_get_by_name(user_id, tag_name):
+def append_tag_attach_changes(user_id, tab, tag_id, lexorank, changes):
+	entry = db.tab_tag_entry_make(user_id, tab["id"], tag_id, lexorank)
+	changes.append(db.change_put("ObjTag", entry, is_new_key=True))
+	changes.append(db.change_put(
+		"ObjTagHistory",
+		db.tab_tag_history_make(user_id, tab["id"], tag_id, "attach", lexorank),
+		is_new_key=True))
+
+
+def api_tab_tag_list(user_id, body):
+	# without tabId: every tag of the user, in name order.
+	# with tabId: the tags of that tab, in attach-entry lexorank order.
+	if body.get("tabId"):
+		tab = db.tab_get_by_id(user_id, str(body["tabId"]))
+		if not tab:
+			raise ApiError(CODE_NOT_FOUND, "tab not found")
+		tag_list = []
+		for entry in db.tab_tag_entry_list_of_tab(user_id, tab["id"]):
+			tag = db.tag_get(user_id, entry["tag_id"])
+			if tag:
+				tag_list.append(tag_response(tag))
+		return ok({"tagList": tag_list})
+	tags = sorted(db.tag_list_of_user(user_id), key=lambda tag: tag["name"])
+	return ok({"tagList": [tag_response(tag) for tag in tags]})
+
+
+def api_tab_tag_search(user_id, body):
+	query_text = str(body.get("query") or "").strip()
+	if not query_text:
+		raise ApiError(CODE_INVALID, "query is required")
+	limit = min(200, int(body.get("limit") or 50))
+	hits = index.tag_name_search(user_id, query_text, limit)
+	# join with the tag entities; a doc whose entity is gone is dropped
+	tag_list = []
+	for hit in hits:
+		tag = db.tag_get(user_id, hit["tagId"])
+		if tag:
+			tag_list.append(tag_response(tag, hit["matchList"]))
+	return ok({"tagList": tag_list})
+
+
+def api_tab_tag_create(user_id, body):
+	name = str(body.get("name") or "").strip()
+	if not name:
+		raise ApiError(CODE_INVALID, "name is required")
+	if any(tag["name"] == name for tag in db.tag_list_of_user(user_id)):
 		raise ApiError(CODE_INVALID, "a tag with this name already exists")
-	tag = {
-		"userId": user_id, "tagName": tag_name, "id": db.make_id(),
-		"createAt": db.now_ms(), "createAtTimezone": db.now_timezone_hour(),
-	}
-	if body.get("color"):
-		tag["color"] = str(body["color"])
-	db.transact_apply([db.change_put("Tag", tag, is_new_key=True)])
+	tag = db.tag_item_make(user_id, name)
+	# index the name FIRST (waits for the worker's confirmation): a tag whose
+	# name is not confirmed indexed is never written to dynamodb, so a tag can
+	# never silently miss from char search. same rule as the tag service.
+	index.tag_name_put(tag["tag_id"], name, user_id)
+	db.transact_apply([db.change_put("TagEntity", tag, is_new_key=True)])
 	return ok({"tag": tag_response(tag)})
 
 
-def api_tag_list(user_id, body):
-	return ok({"tagList": [tag_response(item) for item in db.tag_list(user_id)]})
-
-
-def api_tag_update(user_id, body):
+def api_tab_tag_assign(user_id, body):
 	tag = get_tag(user_id, str(body.get("tagId", "")))
-	tag_new = {**tag}
-	if body.get("color") is not None:
-		tag_new["color"] = str(body["color"])
-	changes = []
-	tag_name_new = str(body.get("tagName") or "").strip()
-	if tag_name_new and tag_name_new != tag["tagName"]:
-		if db.tag_get_by_name(user_id, tag_name_new):
-			raise ApiError(CODE_INVALID, "a tag with this name already exists")
-		tag_new["tagName"] = tag_name_new
-		changes.append(db.change_delete("Tag", db.key_of("Tag", tag), tag))
-		changes.append(db.change_put("Tag", tag_new, is_new_key=True))
-	else:
-		changes.append(db.change_put("Tag", tag_new, item_old=tag))
-	db.transact_apply(changes)
-	return ok({"tag": tag_response(tag_new)})
-
-
-def api_tag_delete(user_id, body):
-	tag = get_tag(user_id, str(body.get("tagId", "")))
-	changes = [db.change_delete("Tag", db.key_of("Tag", tag), tag)]
-	relations, _ = db.relation_list_of_tag(tag["id"], limit=1000)
-	for relation in relations:
-		changes.append(db.change_delete("TabTag", db.key_of("TabTag", relation), relation))
-		tab = db.tab_get_by_id(user_id, relation["tabId"])
-		if tab and tag["id"] in tab.get("tagIdList", []):
-			tab_new = {**tab, "tagIdList": [
-				tag_id for tag_id in tab["tagIdList"] if tag_id != tag["id"]]}
-			changes.append(db.change_put("Tab", tab_new, item_old=tab))
-	db.transact_apply(changes)
-	return ok()
-
-
-def api_tag_assign(user_id, body):
-	tag = get_tag(user_id, str(body.get("tagId", "")))
-	tabs = get_tabs_live(user_id, read_id_list(body, "tabIdList"))
+	tab_id_list = read_id_list(body, "tabIdList")
+	if len(tab_id_list) > TAG_BATCH_MAX:
+		raise ApiError(CODE_INVALID, f"tabIdList exceeds the batch limit of {TAG_BATCH_MAX}")
+	tabs = get_tabs_live(user_id, tab_id_list)
 	changes = []
 	for tab in tabs:
-		if tag["id"] in tab.get("tagIdList", []):
-			continue
-		relation = {
-			"tagId": tag["id"], "tabPath": tab["tabPath"], "tabId": tab["id"],
-			"userId": user_id,
-			"createAt": db.now_ms(), "createAtTimezone": db.now_timezone_hour(),
-		}
-		tab_new = {**tab, "tagIdList": [*tab.get("tagIdList", []), tag["id"]]}
-		changes.append(db.change_put("TabTag", relation, is_new_key=True))
+		if tag["tag_id"] in tab.get("tagIdList", []):
+			continue  # already assigned
+		entries = db.tab_tag_entry_list_of_tab(user_id, tab["id"])
+		rank_last = entries[-1]["lexorank"] if entries else ""
+		append_tag_attach_changes(
+			user_id, tab, tag["tag_id"], db.tag_rank_between(rank_last, ""), changes)
+		tab_new = {**tab, "tagIdList": [*tab.get("tagIdList", []), tag["tag_id"]]}
 		changes.append(db.change_put("Tab", tab_new, item_old=tab))
 	db.transact_apply(changes)
 	return ok()
 
 
-def api_tag_remove(user_id, body):
+def api_tab_tag_remove(user_id, body):
 	tag = get_tag(user_id, str(body.get("tagId", "")))
-	tabs = get_tabs_live(user_id, read_id_list(body, "tabIdList"))
+	tab_id_list = read_id_list(body, "tabIdList")
+	if len(tab_id_list) > TAG_BATCH_MAX:
+		raise ApiError(CODE_INVALID, f"tabIdList exceeds the batch limit of {TAG_BATCH_MAX}")
+	tabs = get_tabs_live(user_id, tab_id_list)
 	changes = []
 	for tab in tabs:
-		if tag["id"] not in tab.get("tagIdList", []):
+		if tag["tag_id"] not in tab.get("tagIdList", []):
 			continue
-		relation = {"tagId": tag["id"], "tabPath": tab["tabPath"]}
-		changes.append(db.change_delete("TabTag", relation, None))
+		entry_key = {"obj_id": tab["id"], "tag_id": tag["tag_id"]}
+		changes.append(db.change_delete("ObjTag", entry_key, None))
+		changes.append(db.change_put(
+			"ObjTagHistory",
+			db.tab_tag_history_make(user_id, tab["id"], tag["tag_id"], "detach"),
+			is_new_key=True))
 		tab_new = {**tab, "tagIdList": [
-			tag_id for tag_id in tab["tagIdList"] if tag_id != tag["id"]]}
+			tag_id for tag_id in tab["tagIdList"] if tag_id != tag["tag_id"]]}
 		changes.append(db.change_put("Tab", tab_new, item_old=tab))
 	db.transact_apply(changes)
 	return ok()
 
 
-def api_tag_tab_list(user_id, body):
+def api_tab_tag_tab_list(user_id, body):
 	tag = get_tag(user_id, str(body.get("tagId", "")))
-	relations, cursor = db.relation_list_of_tag(
-		tag["id"], body.get("cursor"), int(body.get("limit") or 100))
-	tabs = db.tab_get_by_ids(user_id, [relation["tabId"] for relation in relations])
+	entries = db.tab_tag_entry_list_of_tag(tag["tag_id"])
+	tab_ids = [entry["obj_id"] for entry in entries if entry.get("user_id") == user_id]
+	tabs = db.tab_get_by_ids(user_id, tab_ids)
 	tabs_live = [tab for tab in tabs if tab["tabPath"].startswith(db.LIVE_PREFIX)]
-	data = {"tabList": [tab_response(tab) for tab in tabs_live]}
-	if cursor:
-		data["cursor"] = cursor
-	return ok(data)
+	tabs_live.sort(key=lambda tab: tab["tabPath"])  # window order
+	return ok({"tabList": [tab_response(tab) for tab in tabs_live]})
 
 
 # ---------------------------------------------------------------------------
@@ -1046,13 +1083,12 @@ API_HANDLER_MAP = {
 	"/api/tab/context": api_tab_context,
 	"/api/trash/list": api_trash_list,
 	"/api/trash/windowList": api_trash_window_list,
-	"/api/tag/create": api_tag_create,
-	"/api/tag/list": api_tag_list,
-	"/api/tag/update": api_tag_update,
-	"/api/tag/delete": api_tag_delete,
-	"/api/tag/assign": api_tag_assign,
-	"/api/tag/remove": api_tag_remove,
-	"/api/tag/tabList": api_tag_tab_list,
+	"/api/tabTag/list": api_tab_tag_list,
+	"/api/tabTag/search": api_tab_tag_search,
+	"/api/tabTag/create": api_tab_tag_create,
+	"/api/tabTag/assign": api_tab_tag_assign,
+	"/api/tabTag/remove": api_tab_tag_remove,
+	"/api/tabTag/tabList": api_tab_tag_tab_list,
 	"/api/group/create": api_group_create,
 	"/api/group/update": api_group_update,
 	"/api/group/delete": api_group_delete,

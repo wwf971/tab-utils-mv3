@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { observer } from 'mobx-react-lite'
-import { EditIcon, CrossIcon } from '@wwf971/react-comp-misc'
+import { ChevronDown, CrossIcon, SpinningCircle } from '@wwf971/react-comp-misc'
 import { RemoteStore } from './RemoteStore'
 import {
   getSearchFieldText,
@@ -10,10 +10,11 @@ import {
 import './RemoteWindowSelect.css'
 
 // Remote window selector (single selection), conforming to selector.md:
-// a search-bar-like area shows the picked window as a tag with a cross icon,
-// an edit icon at the rightmost opens a dropdown with a search field, a
-// Fetch All button, and the list of cached windows. All ui state lives in
-// RemoteStore.selectorStateById keyed by selectorId and is cleared on unmount.
+// a search-bar-like area shows the picked window as a tag with a cross icon;
+// clicking the bar (or its chevron at the right) toggles a dropdown with a
+// search field, a Fetch All button, and the list of cached windows. All ui
+// state lives in RemoteStore.selectorStateById keyed by selectorId and is
+// cleared on unmount.
 export const RemoteWindowSelect = observer(function RemoteWindowSelect({
   store,
   selectorId,
@@ -71,7 +72,12 @@ export const RemoteWindowSelect = observer(function RemoteWindowSelect({
 
   return (
     <div className="remote-window-select" ref={rootRef}>
-      <div className="remote-window-select-bar">
+      <div
+        className="remote-window-select-bar"
+        onClick={() => {
+          if (!isDisabled) store.selectorSetOpen(selectorId, !state.isOpen)
+        }}
+      >
         <div className="remote-window-select-tags" ref={tagTrackRef}>
           {windowSelected ? (
             <span className="remote-window-select-tag" title={windowSelected.title}>
@@ -80,7 +86,9 @@ export const RemoteWindowSelect = observer(function RemoteWindowSelect({
               </span>
               <span
                 className="remote-window-select-tag-cross"
-                onClick={() => {
+                onClick={(event) => {
+                  // clearing the picked window must not toggle the dropdown
+                  event.stopPropagation()
                   if (!isDisabled) onEvent('windowPick', { windowId: null })
                 }}
               >
@@ -92,12 +100,9 @@ export const RemoteWindowSelect = observer(function RemoteWindowSelect({
           )}
         </div>
         <span
-          className={`remote-window-select-edit ${state.isOpen ? 'remote-window-select-edit-open' : ''}`}
-          onClick={() => {
-            if (!isDisabled) store.selectorSetOpen(selectorId, !state.isOpen)
-          }}
+          className={`remote-window-select-chevron ${state.isOpen ? 'remote-window-select-chevron-open' : ''}`}
         >
-          <EditIcon />
+          <ChevronDown />
         </span>
       </div>
 
@@ -137,7 +142,7 @@ export const RemoteWindowSelect = observer(function RemoteWindowSelect({
           <div className="remote-window-select-list">
             {store.isWindowsLoading ? (
               <div className="remote-window-select-loading">
-                <span className="remote-window-select-spinner" />
+                <SpinningCircle width={13} height={13} color="#6b7280" />
                 <span>Fetching windows from server...</span>
               </div>
             ) : windowIdsVisible.length === 0 ? (

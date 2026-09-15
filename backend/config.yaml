@@ -7,7 +7,10 @@ auth:
     - username: user1
       password: pass1
 
-# aws config lives in ../backend-aws/config.yaml + config.0.yaml
+# aws config lives in ../backend-aws/config.yaml + config.0.yaml.
+# the tag service binding (dynamodb tables + 3_tag name index of aws_oa
+# _3_tag_and_type) is read from that sub-project's config_gen.yaml through
+# aws_oa.project_dir of the aws config, no keys needed here.
 
 # elasticsearch index config
 elasticsearch:

@@ -354,11 +354,15 @@ const RemoteAwsStatusControl = observer(function RemoteAwsStatusControl({
           Refresh Status
         </button>
       </div>
-      <div className={`remote-upload-readiness ${
-        store.isUploadAllowed ? 'remote-aws-ok' : 'remote-aws-bad'
-      }`}>
-        Upload: {store.isUploadAllowed ? 'allowed' : `blocked — ${store.uploadBlockReason}`}
-      </div>
+      {store.configCheckHistory ? (
+        <div className={`remote-upload-readiness ${
+          store.configCheckHistory.isUploadAllowed ? 'remote-aws-ok' : 'remote-aws-bad'
+        }`}>
+          Config checks: {store.configCheckHistory.isUploadAllowed
+            ? 'passed'
+            : store.configCheckHistory.uploadBlockReason}
+        </div>
+      ) : null}
       <TabsOnTop
         defaultTab={store.settingsCloudTabId}
         defaultKeepMounted={false}

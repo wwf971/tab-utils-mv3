@@ -1,6 +1,6 @@
 # Initialize AWS storage for Tab Cloud
 
-Tab Cloud uses six DynamoDB tables. DynamoDB is the source of truth for remote windows, tabs, tags, groups, trash, and pending index work.
+Tab Cloud uses four DynamoDB tables. DynamoDB is the source of truth for remote windows, tabs, groups, trash, and pending index work. Tags live in the tables of the tag service (aws_oa `_3_tag_and_type`), which are initialized by that sub-project's own ensure script, not here; refer to `../backend/tab_cloud.md#tags`.
 
 The normal initialization path is:
 
@@ -8,7 +8,7 @@ The normal initialization path is:
 aws config (backend-aws/config.yaml + config.0.yaml)
   -> python ensure_architect.py        (terminal)
      or backend /api/maintenance/awsInit
-       -> create six missing DynamoDB tables
+       -> create four missing DynamoDB tables
        -> create the missing Elasticsearch index (awsInit only)
   -> Check Tables
        -> every table is ACTIVE
@@ -24,8 +24,6 @@ With the default `table_name_prefix: TabCloud`, the tables are:
 ```text
 TabCloudWindow
 TabCloudTab
-TabCloudTag
-TabCloudTabTag
 TabCloudGroup
 TabCloudMeta
 ```
@@ -62,34 +60,6 @@ global secondary index:
   projection:    ALL
 ```
 
-### Tag
-
-```text
-table:         TabCloudTag
-partition key: userId    String
-sort key:      tagName   String
-
-global secondary index:
-  name:         gsiTagId
-  partition key: id      String
-  sort key:      none
-  projection:    ALL
-```
-
-### TabTag
-
-```text
-table:         TabCloudTabTag
-partition key: tagId     String
-sort key:      tabPath   String
-
-global secondary index:
-  name:         gsiTabTag
-  partition key: tabId   String
-  sort key:      tagId   String
-  projection:    ALL
-```
-
 ### Group
 
 ```text
@@ -116,7 +86,7 @@ A GSI projection controls which base-table attributes are copied into the index:
 - `INCLUDE` also copies a fixed list of selected attributes.
 - `ALL` copies the complete item.
 
-The backend queries `gsiWindowId`, `gsiTabId`, `gsiTagId`, and `gsiTabTag`, then directly uses the returned item. It does not perform a second base-table read for attributes omitted from the GSI. Therefore:
+The backend queries `gsiWindowId` and `gsiTabId`, then directly uses the returned item. It does not perform a second base-table read for attributes omitted from the GSI. Therefore:
 
 ```text
 required for this implementation: ALL
@@ -127,7 +97,7 @@ do not use:                       KEYS_ONLY or INCLUDE
 
 ## Common table settings
 
-Use these settings for all six tables:
+Use these settings for all four tables:
 
 ```text
 capacity mode:       On-demand / PAY_PER_REQUEST
@@ -250,8 +220,6 @@ Expected result:
 ```text
 TabCloudWindow  ACTIVE
 TabCloudTab     ACTIVE
-TabCloudTag     ACTIVE
-TabCloudTabTag  ACTIVE
 TabCloudGroup   ACTIVE
 TabCloudMeta    ACTIVE
 Elasticsearch index: tab_cloud_tab  EXISTS
@@ -275,14 +243,14 @@ For each table:
 4. Enter the exact table name, partition key, and sort key from [Required DynamoDB structure](#required-dynamodb-structure).
 5. Choose **Customize settings**.
 6. Choose **On-demand** capacity.
-7. For Window, Tab, Tag, and TabTag, add the specified global secondary index.
+7. For Window and Tab, add the specified global secondary index.
 8. Set every GSI projection to **All**.
 9. Keep TTL and DynamoDB Streams disabled.
 10. Create the table and wait for table status **ACTIVE**.
 
-Repeat until all six tables exist. Then use **Check Tables** in Remote settings.
+Repeat until all four tables exist. Then use **Check Tables** in Remote settings.
 
-Manual creation does not create the Elasticsearch index. After the six tables
+Manual creation does not create the Elasticsearch index. After the four tables
 are active, use **Initialize Missing Index** in the Search Index tab.
 
 ## Verification and incorrect schemas
@@ -295,11 +263,11 @@ keys, GSI projection mode, key attribute types, and on-demand billing.
 After manual creation, verify in the DynamoDB Console:
 
 ```text
-all six tables are ACTIVE
+all four tables are ACTIVE
 all partition and sort key names match exactly, including letter case
 all key types are String
-all four GSI names and keys match exactly
-all four GSI projections are ALL
+both GSI names and keys match exactly
+both GSI projections are ALL
 capacity mode is On-demand
 backend config uses the same Region and prefix
 ```

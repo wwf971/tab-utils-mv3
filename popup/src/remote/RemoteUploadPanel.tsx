@@ -3,6 +3,7 @@ import { FolderView } from '@wwf971/react-comp-misc'
 import { TabItem, type TabItemStatus } from '@wwf971/tab-manage-frontend-common'
 import { PopupStore } from '../PopupStore'
 import { RemoteWindowSelect } from './RemoteWindowSelect'
+import { RemoteTagSelect } from './RemoteTagSelect'
 import './RemoteUploadPanel.css'
 
 // Confirm popup of one upload from the local Search tab: listed tabs go to a
@@ -65,6 +66,21 @@ export const RemoteUploadPanel = observer(function RemoteUploadPanel({
             onEvent={(eventType, eventData) => {
               if (eventType === 'windowPick') {
                 remote.setUploadWindowId((eventData.windowId as string | null) ?? null)
+              }
+            }}
+          />
+        </div>
+
+        <div className="remote-upload-target">
+          <span className="remote-upload-target-label">Tags</span>
+          <RemoteTagSelect
+            store={remote}
+            selectorId="upload-tags"
+            tagIdsSelected={panel.tagIdsSelected}
+            isDisabled={isBusy}
+            onEvent={(eventType, eventData) => {
+              if (eventType === 'tagsChange') {
+                remote.setUploadTagIds((eventData.tagIds as string[]) ?? [])
               }
             }}
           />

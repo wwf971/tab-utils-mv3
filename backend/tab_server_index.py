@@ -5,6 +5,7 @@
 #   index_ensure / index_recreate / index_check
 #   doc_put / doc_delete / doc_put_batch / doc_delete_batch
 #   search(user_id, query_tree, field_list, is_trashed, limit)
+#   tag_name_put / tag_name_search      (tag name index of the tag service)
 #
 # so another engine (whoosh, opensearch) only needs to re-implement them.
 # Refer to tab_cloud.md#index-designelasticsearch.
@@ -21,16 +22,20 @@ HIGHLIGHT_TAG_END = "[[HL_END]]"
 
 _es = None
 _index_name = "tab_cloud_tab"
+_index_tag_name = "3_tag"
 _shard_count = 1
 
 
 def init_index(config):
-	global _es, _index_name, _shard_count
+	global _es, _index_name, _index_tag_name, _shard_count
 	es_config = config.get("elasticsearch", {})
 	endpoint = es_config.get(es_config.get("endpoint_use", "local"), {})
 	server_url = (f"{endpoint.get('scheme', 'http')}://"
 				  f"{endpoint.get('host', '127.0.0.1')}:{endpoint.get('port', 9200)}")
 	_index_name = endpoint.get("index_name", "tab_cloud_tab")
+	# tag name index of the tag service (aws_oa _3_tag_and_type), living on the
+	# same home elasticsearch; refer to tab_cloud.md#tags
+	_index_tag_name = config.get("tag_service", {}).get("index_tag") or "3_tag"
 	_shard_count = endpoint.get("number_of_shards", 1)
 	_es = Elasticsearch(server_url, request_timeout=5)
 
@@ -314,3 +319,51 @@ def _positions_of_highlight(highlighted_text):
 		position_original += match_length
 		position_tagged = index_end + len(HIGHLIGHT_TAG_END)
 	return positions
+
+
+# ---------------------------------------------------------------------------
+# tag name index: the 3_tag index of the tag service (aws_oa _3_tag_and_type)
+# on the same home elasticsearch. its doc shape is {name, user_id}, doc id =
+# tag id, built from the same char-level config, so the search below matches
+# any substring of a name, case-insensitive. the index itself is created and
+# owned by the tag service. refer to tab_cloud.md#tags.
+# ---------------------------------------------------------------------------
+
+def tag_name_put(tag_id, name, user_id):
+	_wrap_index_call(lambda: _es.index(
+		index=_index_tag_name, id=tag_id,
+		document={"name": name, "user_id": user_id},
+		refresh="wait_for"))
+
+
+def tag_name_search(user_id, query_text, limit):
+	# returns [{"tagId": ..., "matchList": [{"field", "indexStart", "indexEnd"}]}]
+	body = {
+		"query": {
+			"bool": {
+				"must": [_term_query(query_text, ["name"])],
+				"filter": [{"term": {"user_id": user_id}}],
+			}
+		},
+		"highlight": {"fields": {"name": {
+			"type": "fvh",
+			"pre_tags": [HIGHLIGHT_TAG_START],
+			"post_tags": [HIGHLIGHT_TAG_END],
+			"fragment_size": 999999,
+			"number_of_fragments": 0,
+		}}},
+		"size": limit,
+	}
+	response = _wrap_index_call(lambda: _es.search(index=_index_tag_name, body=body))
+	results = []
+	for hit in response["hits"]["hits"]:
+		match_list = []
+		for highlighted_text in hit.get("highlight", {}).get("name", []):
+			for index_start, index_end in _positions_of_highlight(highlighted_text):
+				match_list.append({
+					"field": "name",
+					"indexStart": index_start,
+					"indexEnd": index_end,
+				})
+		results.append({"tagId": hit["_id"], "matchList": match_list})
+	return results

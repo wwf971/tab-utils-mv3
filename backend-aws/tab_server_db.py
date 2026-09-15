@@ -1,6 +1,13 @@
 
 # DynamoDB layer of tab cloud: tables, item access, transactions, lexorank, journal.
 # Refer to tab_cloud.md for the table formats and the consistency design.
+#
+# Besides its own tables, this layer also reads/writes three tables of the
+# external tag service (aws_oa sub-project _3_tag_and_type): the tag entity
+# table, the obj-tag attach table and the obj-tag history table. They join the
+# same TransactWriteItems calls as the tab items (dynamodb transactions span
+# tables), which is what keeps "delete a tab + delete its attach entries"
+# atomic. Refer to tab_cloud.md#tags.
 
 import base64
 import json
@@ -36,10 +43,13 @@ _client = None
 _serializer = TypeSerializer()
 _deserializer = TypeDeserializer()
 _table_name_prefix = "tabCloud"
+# short name -> physical name of the tag service tables (they carry the tag
+# service's own name prefix, so they are configured, not prefix-derived)
+_tag_service_table_names = {}
 
 
 def init_db(config):
-	global _resource, _client, _table_name_prefix
+	global _resource, _client, _table_name_prefix, _tag_service_table_names
 	aws = config.get("aws", {})
 	kwargs = {
 		"region_name": aws.get("region_name"),
@@ -52,9 +62,22 @@ def init_db(config):
 	_resource = boto3.resource("dynamodb", **kwargs)
 	_client = boto3.client("dynamodb", **kwargs)
 	_table_name_prefix = aws.get("dynamodb", {}).get("table_name_prefix", "tabCloud")
+	tag_service = config.get("tag_service", {}) or {}
+	_tag_service_table_names = {
+		"TagEntity": tag_service.get("table_tag") or "",
+		"ObjTag": tag_service.get("table_obj_tag") or "",
+		"ObjTagHistory": tag_service.get("table_obj_tag_history") or "",
+	}
 
 
 def table_name(short_name):
+	if short_name in _tag_service_table_names:
+		full_name = _tag_service_table_names[short_name]
+		if not full_name:
+			raise DbUnavailableError(
+				"tag service tables are not configured,"
+				" re-run ensure_architect.py (refer to aws_backend_impl.md)")
+		return full_name
 	return _table_name_prefix + short_name
 
 
@@ -88,6 +111,11 @@ def now_ms():
 
 def now_timezone_hour():
 	return -time.timezone // 3600
+
+
+def now_timezone_minute():
+	# the tag service tables store timezones in signed minutes (time-format.md)
+	return -time.timezone // 60
 
 
 def _rank_digit(rank_text, index, default_value):
@@ -128,6 +156,23 @@ def rank_list_between(rank_prev, rank_next, count):
 		ranks.append(rank_new)
 		rank_last = rank_new
 	return ranks
+
+
+def tag_rank_between(rank_low, rank_high):
+	# lexorank of the tag service's attach entries: same 0-9a-z alphabet, but
+	# following that service's rule that a rank never ends with '0', so a gap
+	# always exists below every rank (refer to
+	# _3_tag_and_type/tag_type_service_impl.md#core-concepts)
+	result = ""
+	position = 0
+	while True:
+		digit_low = RANK_ALPHABET.index(rank_low[position]) if position < len(rank_low) else 0
+		digit_high = RANK_ALPHABET.index(rank_high[position]) if position < len(rank_high) else RANK_BASE
+		if digit_high - digit_low > 1:
+			return result + RANK_ALPHABET[(digit_low + digit_high) // 2]
+		# digits equal or adjacent: keep the low digit and go one char deeper
+		result += RANK_ALPHABET[digit_low]
+		position += 1
 
 
 def tab_path_live(window_id, tab_rank):
@@ -507,36 +552,104 @@ def group_has_other_member(user_id, window_id, group_id, tab_id_excluded_set):
 
 
 # ---------------------------------------------------------------------------
-# tags
+# tags: entities and attach entries of the external tag service
+# (aws_oa _3_tag_and_type). its tables use snake_case attributes, 16-char ids
+# and timezone attributes in signed MINUTES; refer to tab_cloud.md#tags.
 # ---------------------------------------------------------------------------
 
-def tag_list(user_id):
-	return _query_all("Tag", key_condition=Key("userId").eq(user_id))
+TIME_KEY_DIGITS = 16  # sort key format of the obj-tag history table
 
 
-def tag_get_by_id(user_id, tag_id):
-	items = _query_all("Tag", index_name="gsiTagId", key_condition=Key("id").eq(tag_id))
-	for item in items:
-		if item.get("userId") == user_id:
-			return item
-	return None
+def time_key_make(time_stamp):
+	return f"{time_stamp:0{TIME_KEY_DIGITS}d}#{make_id(4)}"
 
 
-def tag_get_by_name(user_id, tag_name):
-	items, _, _ = _query("Tag", limit=1, key_condition=(
-		Key("userId").eq(user_id) & Key("tagName").eq(tag_name)))
-	return items[0] if items else None
+def tag_get(user_id, tag_id):
+	try:
+		response = _table("TagEntity").get_item(
+			Key={"user_id": user_id, "tag_id": tag_id})
+	except Exception as error:
+		raise _wrap_db_error(error)
+	return _plain(response.get("Item")) if response.get("Item") else None
 
 
-def relation_list_of_tag(tag_id, cursor=None, limit=100):
-	items, cursor_next, _ = _query("TabTag", limit=limit, cursor=cursor,
-		key_condition=Key("tagId").eq(tag_id))
-	return items, cursor_next
+def tag_list_of_user(user_id):
+	return _query_all("TagEntity", key_condition=Key("user_id").eq(user_id))
 
 
-def relation_list_of_tab(tab_id):
-	return _query_all("TabTag", index_name="gsiTabTag",
-		key_condition=Key("tabId").eq(tab_id))
+def tag_item_make(user_id, name):
+	time_stamp = now_ms()
+	timezone_minute = now_timezone_minute()
+	return {
+		"user_id": user_id,
+		"tag_id": make_id(16),
+		"name": name,
+		"is_history_enabled": False,
+		"create_at": time_stamp,
+		"create_at_timezone": timezone_minute,
+		"modify_at": time_stamp,
+		"modify_at_timezone": timezone_minute,
+	}
+
+
+def tab_tag_entry_list_of_tab(user_id, tab_id):
+	# attach entries of one tab (the user's only), in lexorank order
+	entries = _query_all("ObjTag", key_condition=Key("obj_id").eq(tab_id))
+	entries = [entry for entry in entries if entry.get("user_id") == user_id]
+	entries.sort(key=lambda entry: entry.get("lexorank", ""))
+	return entries
+
+
+def tab_tag_entry_list_of_tag(tag_id):
+	# all attach entries of one tag through gsi_tag_id (INCLUDE projection
+	# carries obj_id + user_id, enough to join the tab items)
+	return _query_all("ObjTag", index_name="gsi_tag_id",
+		key_condition=Key("tag_id").eq(tag_id))
+
+
+def tab_tag_entry_make(user_id, tab_id, tag_id, lexorank):
+	return {
+		"obj_id": tab_id,
+		"tag_id": tag_id,
+		"user_id": user_id,
+		"lexorank": lexorank,
+		"create_at": now_ms(),
+		"create_at_timezone": now_timezone_minute(),
+	}
+
+
+def tab_tag_history_make(user_id, tab_id, tag_id, operation, lexorank=None):
+	# one attach/detach record of the obj-tag history table, written in the
+	# same transaction as the attach entry change
+	time_stamp = now_ms()
+	record = {
+		"obj_id": tab_id,
+		"time_key": time_key_make(time_stamp),
+		"user_id": user_id,
+		"operation": operation,
+		"tag_id": tag_id,
+		"time_stamp": time_stamp,
+		"time_stamp_timezone": now_timezone_minute(),
+	}
+	if lexorank is not None:
+		record["lexorank"] = lexorank
+	return record
+
+
+def tab_tag_history_wipe(user_id, tab_id):
+	# remove the tag history records of one tab (used after the tab is deleted
+	# permanently). record count is unbounded, so this runs as batch deletes
+	# outside the delete transaction; it is idempotent and retryable.
+	records = _query_all("ObjTagHistory", key_condition=Key("obj_id").eq(tab_id))
+	try:
+		with _table("ObjTagHistory").batch_writer() as batch:
+			for record in records:
+				if record.get("user_id") != user_id:
+					continue
+				batch.delete_item(Key={
+					"obj_id": record["obj_id"], "time_key": record["time_key"]})
+	except Exception as error:
+		raise _wrap_db_error(error)
 
 
 # ---------------------------------------------------------------------------
@@ -561,6 +674,13 @@ _TABLE_KEY_NAMES = {
 	short_name: tuple(name for name, _, _ in spec["keys"])
 	for short_name, spec in architect.TABLE_SPECS.items()
 }
+# key names of the tag service tables (their specs live in the tag service's
+# own ensure script, not in this project's TABLE_SPECS)
+_TABLE_KEY_NAMES.update({
+	"TagEntity": ("user_id", "tag_id"),
+	"ObjTag": ("obj_id", "tag_id"),
+	"ObjTagHistory": ("obj_id", "time_key"),
+})
 
 
 def aws_check():

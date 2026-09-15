@@ -31,15 +31,25 @@ from tab_server_index_sqs import IndexUnavailableError
 # init, once per lambda container
 # ---------------------------------------------------------------------------
 
-db.init_db({"aws": {
-	# region and credentials come from the lambda runtime (execution role)
-	"dynamodb": {"table_name_prefix": os.environ["TABLE_NAME_PREFIX"]},
-}})
+db.init_db({
+	"aws": {
+		# region and credentials come from the lambda runtime (execution role)
+		"dynamodb": {"table_name_prefix": os.environ["TABLE_NAME_PREFIX"]},
+	},
+	# tables of the tag service (aws_oa _3_tag_and_type), joined into the tab
+	# cloud transactions; refer to tab_cloud.md#tags
+	"tag_service": {
+		"table_tag": os.environ.get("TAG_TABLE_TAG", ""),
+		"table_obj_tag": os.environ.get("TAG_TABLE_OBJ_TAG", ""),
+		"table_obj_tag_history": os.environ.get("TAG_TABLE_OBJ_TAG_HISTORY", ""),
+	},
+})
 
 index.init_index({
 	"queue_url": os.environ["ES_QUEUE_URL"],
 	"table_result": os.environ["ES_RESULT_TABLE"],
 	"index_name": os.environ["ES_INDEX_NAME"],
+	"index_tag_name": os.environ.get("ES_INDEX_TAG_NAME", "3_tag"),
 	"result_timeout": os.environ.get("ES_RESULT_TIMEOUT_SEC", "20"),
 	"result_poll_interval": os.environ.get("ES_RESULT_POLL_SEC", "0.25"),
 })

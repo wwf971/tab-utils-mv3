@@ -1,0 +1,54 @@
+.current-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.current-tab-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+
+.current-tab-refresh {
+  display: inline-flex;
+  cursor: pointer;
+  width: 13px;
+  height: 13px;
+  color: #6b7280;
+}
+
+.current-tab-refresh:hover {
+  color: #1f2937;
+}
+
+.current-tab-refresh svg {
+  width: 13px;
+  height: 13px;
+}
+
+.current-tab-item {
+  border: 1px solid #e5e7eb;
+  border-radius: 2px;
+  padding: 2px;
+}
+
+.current-tab-empty {
+  color: #9ca3af;
+  font-size: 12px;
+  padding: 4px 2px;
+}
+
+.current-tab-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.current-tab-note {
+  color: #b91c1c;
+  font-size: 11px;
+}

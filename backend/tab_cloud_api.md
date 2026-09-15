@@ -128,7 +128,9 @@ Batch upload; this is what "upload tabs to remote" from the extension calls. One
     {"title": "Example", "url": "https://example.com/"}
   ],
   "targetTabId": null,          // default position: end of the window
-  "placement": "after"          // before | after targetTabId, keeping tabList order
+  "placement": "after",         // before | after targetTabId, keeping tabList order
+  "tagIdList": []               // optional, tags every created tab gets; the
+                                // attach entries commit in the same transaction
 }
 // data
 {"windowId": "b7n2m4p1", "tabList": [/* created tab objects */]}
@@ -192,35 +194,33 @@ request `{cursor?, limit?}` → data `{tabList, cursor?}`, newest trashed first.
 
 request `{cursor?, limit?}` → data `{windowList, cursor?}`, trashed windows, newest first.
 
-## Tag
+## Tab Tag
 
-### POST /api/tag/create
+Tags are entities of the external tag service; refer to `tab_cloud.md#tags`. A tag response is `{id, name, parentId}` (plus `matchList` from search). Renaming and deleting a tag are not offered here for the time being.
 
-request `{tagName, color?}` → data `{tag}`. Fails with -4 if the user already has a tag with this name.
+### POST /api/tabTag/list
 
-### POST /api/tag/list
+request `{tabId?}` → data `{tagList}`. Without `tabId`: every tag of the user, ordered by name. With `tabId`: the tags of that tab, in attach order.
 
-request `{}` → data `{tagList}`, ordered by tagName.
+### POST /api/tabTag/search
 
-### POST /api/tag/update
+request `{query, limit?}` → data `{tagList}`, each with `matchList` over the `name` field. Searches the tag service's char-level name index: any substring, case-insensitive.
 
-request `{tagId, tagName?, color?}` — a rename is delete + put of the tag item in one transaction.
+### POST /api/tabTag/create
 
-### POST /api/tag/delete
+request `{name}` → data `{tag}`. Fails with -4 if the user already has a tag with this name. The name is indexed first (confirmed), then the entity is written.
 
-request `{tagId}` — deletes its relationship items and removes the tagId from member tabs, one transaction.
+### POST /api/tabTag/assign
 
-### POST /api/tag/assign
+request `{tagId, tabIdList}` — one transaction (attach entry + history record + tab item per tab); already-assigned tabs are skipped silently. The batch limit is 30 tabs.
 
-request `{tagId, tabIdList}` — one transaction; already-assigned tabs are skipped silently.
+### POST /api/tabTag/remove
 
-### POST /api/tag/remove
+request `{tagId, tabIdList}` — one transaction. The batch limit is 30 tabs.
 
-request `{tagId, tabIdList}` — one transaction.
+### POST /api/tabTag/tabList
 
-### POST /api/tag/tabList
-
-request `{tagId, cursor?, limit?}` → data `{tabList, cursor?}`, in window order (from the relationship items' tabPath sort key); trashed tabs are dropped after the join.
+request `{tagId}` → data `{tabList}`, in window order; trashed tabs are dropped after the join.
 
 ## Group
 
@@ -292,6 +292,8 @@ Config checks are cached in backend-process memory. Each check record has:
 
 The cache keeps the newest 50 records. History responses include the requested
 newest records, `latestByType`, `isUploadAllowed`, and `uploadBlockReason`.
+The two derived fields summarize the latest required checks for the settings
+panel display; no api and no extension operation is gated on them.
 
 ### POST /api/maintenance/tableCheck
 

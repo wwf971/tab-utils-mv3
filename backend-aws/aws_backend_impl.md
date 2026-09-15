@@ -9,8 +9,11 @@ extension popup
                                     jwt authorizer (verifies the token)
                                     -> lambda {prefix}-api
                                          -> dynamodb tabCloud* tables
+                                         -> tag service tables (aws_oa _3_tag_and_type),
+                                            joined into the same transactions
                                          -> es task queue --> home worker --> local es
-                                            (aws_oa _2_local_es)
+                                            (aws_oa _2_local_es; tab index + the tag
+                                            service's 3_tag name index)
 ```
 
 ## One Core, Two Transports
@@ -51,13 +54,19 @@ Tasks a dead worker never fetched die out with the queue's retention; the journa
 
 The index is `local_es.index_name` on the shared home elasticsearch, config name `char` with the same field config as the local index layer (char fields `title`/`url`, exact fields `userId`/`isTrashed`/`contentRevision`), so it carries this project's ownership stamp and no other service can silently adopt it.
 
+Both index modules additionally offer `tag_name_put` / `tag_name_search` over the tag service's `3_tag` name index (document `{name, user_id}`, document id = tag id) on the same home elasticsearch; that index is created and owned by the tag service. Unlike the tab document writes, `tag_name_put` waits for the worker's confirmation: a tag entity is written to dynamodb only after its name is confirmed indexed (refer to `../backend/tab_cloud.md#tags`).
+
+## Tag Service Binding
+
+Tags are entities of `_3_tag_and_type` (refer to `../backend/tab_cloud.md#tags`). The tab lambda does not call that service's http api: it reads/writes three of its dynamodb tables directly (tag entity, obj-tag, obj-tag-history), so attach entries join the tab cloud `TransactWriteItems` — this is what makes "deleting a tab deletes its tag entries" atomic. The physical table names and the `3_tag` index name come from `_3_tag_and_type/config_gen.yaml` and reach the lambda as env / the local server at startup. The lambda role gets item-level access to exactly those three tables.
+
 ## AWS Resource Instances
 
 All names start with `{prefix}` = `name_prefix` from `./config.yaml`. The dynamodb tables use their own `aws.dynamodb.table_name_prefix` (the tables predate this sub-project; specs and check rules in `ensure_architect.py` / `tab_cloud_aws_init.md`).
 
 | resource | name | purpose |
 |---|---|---|
-| dynamodb tables | `{table_name_prefix}Window` ... | source of truth, 6 tables |
+| dynamodb tables | `{table_name_prefix}Window` ... | source of truth, 4 tables |
 | cognito app client | `{prefix}-extension` | extension login on the shared pool |
 | iam role | `{prefix}-api-role` | lambda execution role |
 | lambda | `{prefix}-api` | all apis, one function |
@@ -65,9 +74,11 @@ All names start with `{prefix}` = `name_prefix` from `./config.yaml`. The dynamo
 
 The http api carries the permissive cors configuration of `aws_utils` (any origin, so the extension popup — a `chrome-extension://` origin — can call it). One cors subtlety: the browser's preflight carries no `Authorization` header, and the jwt-authorized `ANY` route would answer it with 401, which the browser treats as a failed preflight. So a second route `OPTIONS /api/{proxy+}` exists without authorization; the lambda answers it with an empty 204 and the api gateway attaches the cors headers.
 
-Resources of the aws_oa sub-projects (user pool, user table, es task queue, es result table) are consumed, not created: their ids are read from each sub-project's `config_gen.yaml` under `aws_oa.project_dir`.
+Resources of the aws_oa sub-projects (user pool, user table, es task queue, es result table, tag service tables) are consumed, not created: their ids are read from each sub-project's `config_gen.yaml` under `aws_oa.project_dir`.
 
-The lambda role allows exactly what the backend does: full access to the `{table_name_prefix}*` tables, query on the user table, send on the es task queue, get-item on the es result table, and logs.
+The lambda role allows exactly what the backend does: full access to the `{table_name_prefix}*` tables, item-level access to the three tag service tables, query on the user table, send on the es task queue, get-item on the es result table, and logs.
+
+The `Tag` / `TabTag` tables of the removed built-in tag system are dropped by the deploy flow when found (they never held data) and by `--delete all`.
 
 ## Lambda
 
@@ -79,6 +90,8 @@ One function serves every api; the zip is flat (import by module name): `lambda_
 | `TABLE_USER` | user table of `_0_auth_cognito` |
 | `ES_QUEUE_URL`, `ES_RESULT_TABLE` | the local es service resources |
 | `ES_INDEX_NAME` | this project's index |
+| `ES_INDEX_TAG_NAME` | the tag service's name index (`3_tag`) |
+| `TAG_TABLE_TAG`, `TAG_TABLE_OBJ_TAG`, `TAG_TABLE_OBJ_TAG_HISTORY` | the tag service tables |
 | `ES_RESULT_TIMEOUT_SEC`, `ES_RESULT_POLL_SEC` | result wait tuning |
 
 The http status is always 200 with the outcome in the body's `code` field, same convention as the local server; the only non-200 the extension sees is the authorizer's bare 401, which it maps to "log in again".
@@ -103,7 +116,7 @@ ensure_architect.py --delete all   remove the aws backend (typed confirmation)
 
 It builds on `aws_utils` of the aws_oa project (imported from `aws_oa.project_dir`) for the role/lambda/http-api ensurement. A down home worker fails only the es index step with a warning, never the aws-side deploy: the index can be ensured later by re-running the script or by the indexInit api.
 
-Prerequisites: `_0_auth_cognito` and `_2_local_es` are ensured (their `config_gen.yaml` exist), and the extension users have mapping rows in the user table.
+Prerequisites: `_0_auth_cognito`, `_2_local_es` and `_3_tag_and_type` are ensured (their `config_gen.yaml` exist), and the extension users have mapping rows in the user table.
 
 ## Extension Side
 

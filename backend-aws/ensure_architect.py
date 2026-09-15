@@ -99,14 +99,6 @@ TABLE_SPECS = {
 		"keys": [("userId", "S", "HASH"), ("tabPath", "S", "RANGE")],
 		"gsis": [{"name": "gsiTabId", "keys": [("id", "S", "HASH")]}],
 	},
-	"Tag": {
-		"keys": [("userId", "S", "HASH"), ("tagName", "S", "RANGE")],
-		"gsis": [{"name": "gsiTagId", "keys": [("id", "S", "HASH")]}],
-	},
-	"TabTag": {
-		"keys": [("tagId", "S", "HASH"), ("tabPath", "S", "RANGE")],
-		"gsis": [{"name": "gsiTabTag", "keys": [("tabId", "S", "HASH"), ("tagId", "S", "RANGE")]}],
-	},
 	"Group": {
 		"keys": [("userId", "S", "HASH"), ("id", "S", "RANGE")],
 		"gsis": [],
@@ -118,8 +110,30 @@ TABLE_SPECS = {
 }
 
 
+# tables of the removed built-in tag system; tags now live in the tag service
+# (aws_oa _3_tag_and_type, refer to tab_cloud.md#tags). the deploy flow drops
+# them when found (they never held data).
+LEGACY_TABLE_NAMES = ["Tag", "TabTag"]
+
+
 def table_full_name(table_name_prefix, short_name):
 	return table_name_prefix + short_name
+
+
+def legacy_table_cleanup(client, table_name_prefix):
+	for short_name in LEGACY_TABLE_NAMES:
+		full_name = table_full_name(table_name_prefix, short_name)
+		try:
+			description = client.describe_table(TableName=full_name)["Table"]
+		except client.exceptions.ResourceNotFoundException:
+			continue
+		# the legacy tables may carry deletion protection (recommended by the
+		# old init doc); they never held data, so disabling it here is safe
+		if description.get("DeletionProtectionEnabled"):
+			client.update_table(TableName=full_name, DeletionProtectionEnabled=False)
+			print(f"legacy table deletion protection disabled: {full_name}")
+		client.delete_table(TableName=full_name)
+		print(f"legacy table deleted: {full_name}")
 
 
 # ---------------------------------------------------------------------------
@@ -415,8 +429,14 @@ def lambda_zip_build():
 
 
 def role_policy_build(region, account_id, table_name_prefix,
-					  user_table_arn, queue_arn, result_table_arn):
+					  user_table_arn, queue_arn, result_table_arn,
+					  tag_table_names):
 	table_arn_prefix = f"arn:aws:dynamodb:{region}:{account_id}:table/{table_name_prefix}"
+	tag_table_arns = []
+	for tag_table_name in tag_table_names:
+		tag_table_arn = f"arn:aws:dynamodb:{region}:{account_id}:table/{tag_table_name}"
+		tag_table_arns.append(tag_table_arn)
+		tag_table_arns.append(f"{tag_table_arn}/index/*")
 	return {
 		"Version": "2012-10-17",
 		"Statement": [
@@ -433,6 +453,23 @@ def role_policy_build(region, account_id, table_name_prefix,
 					"dynamodb:TransactWriteItems",
 				],
 				"Resource": [f"{table_arn_prefix}*", f"{table_arn_prefix}*/index/*"],
+			},
+			{
+				# the tag service's tag entity / obj-tag / obj-tag-history
+				# tables, joined into the tab cloud transactions (refer to
+				# tab_cloud.md#tags). BatchWriteItem covers the history wipe
+				# after a permanent tab delete.
+				"Sid": "TagServiceTables",
+				"Effect": "Allow",
+				"Action": [
+					"dynamodb:GetItem",
+					"dynamodb:PutItem",
+					"dynamodb:DeleteItem",
+					"dynamodb:Query",
+					"dynamodb:TransactWriteItems",
+					"dynamodb:BatchWriteItem",
+				],
+				"Resource": tag_table_arns,
 			},
 			{
 				"Sid": "UserTableRead",
@@ -483,7 +520,7 @@ def options_route_ensure(apigw, api_id, integration_id):
 	print(f"route created: {route_key}")
 
 
-def lambda_env_build(config, cognito_gen, es_gen):
+def lambda_env_build(config, cognito_gen, es_gen, tag_gen):
 	local_es = config.get("local_es", {})
 	return {
 		"TABLE_NAME_PREFIX": table_name_prefix_of(config),
@@ -494,6 +531,11 @@ def lambda_env_build(config, cognito_gen, es_gen):
 		"ES_INDEX_NAME": local_es.get("index_name", "tab_cloud_tab"),
 		"ES_RESULT_TIMEOUT_SEC": str(local_es.get("result_timeout", 20)),
 		"ES_RESULT_POLL_SEC": str(local_es.get("result_poll_interval", 0.25)),
+		# the tag service tables and its name index (refer to tab_cloud.md#tags)
+		"TAG_TABLE_TAG": tag_gen["table_tag"],
+		"TAG_TABLE_OBJ_TAG": tag_gen["table_obj_tag"],
+		"TAG_TABLE_OBJ_TAG_HISTORY": tag_gen["table_obj_tag_history"],
+		"ES_INDEX_TAG_NAME": tag_gen["index_tag"],
 	}
 
 
@@ -577,14 +619,17 @@ def architecture_ensure(config):
 	utils = aws_utils_import(config)
 	cognito_gen = aws_oa_gen_load(config, "_0_auth_cognito")
 	es_gen = aws_oa_gen_load(config, "_2_local_es")
+	tag_gen = aws_oa_gen_load(config, "_3_tag_and_type")["tag_type"]
 	names = names_build(name_prefix_of(config))
 	region = config["aws"]["region_name"]
 	pool_id = cognito_gen["cognito"]["user_pool_id"]
 	pool_region = pool_id.split("_")[0]
 
 	print("== dynamodb tables")
+	dynamodb_client = dynamodb_client_make(config)
 	table_status_print(architect_ensure(
-		dynamodb_client_make(config), table_name_prefix_of(config)))
+		dynamodb_client, table_name_prefix_of(config)))
+	legacy_table_cleanup(dynamodb_client, table_name_prefix_of(config))
 
 	print("== cognito app client of the extension")
 	cognito = aws_client_make(config, "cognito-idp", pool_region)
@@ -602,6 +647,8 @@ def architecture_ensure(config):
 		user_table_arn,
 		es_gen["queue_task"]["queue_arn"],
 		es_gen["table_result"]["table_arn"],
+		[tag_gen["table_tag"], tag_gen["table_obj_tag"],
+		 tag_gen["table_obj_tag_history"]],
 	))
 	lambda_client = aws_client_make(config, "lambda")
 	lambda_config = {
@@ -611,7 +658,7 @@ def architecture_ensure(config):
 	}
 	lambda_arn = utils.lambda_function_ensure(
 		lambda_client, names["lambda"], lambda_config, role_arn,
-		lambda_env_build(config, cognito_gen, es_gen), lambda_zip_build())
+		lambda_env_build(config, cognito_gen, es_gen, tag_gen), lambda_zip_build())
 
 	print("== api gateway http api")
 	apigw = aws_client_make(config, "apigatewayv2")
@@ -655,13 +702,24 @@ def architecture_ensure(config):
 def architecture_check(config):
 	cognito_gen = aws_oa_gen_load(config, "_0_auth_cognito")
 	es_gen = aws_oa_gen_load(config, "_2_local_es")
+	tag_gen = aws_oa_gen_load(config, "_3_tag_and_type")["tag_type"]
 	names = names_build(name_prefix_of(config))
 	pool_id = cognito_gen["cognito"]["user_pool_id"]
 	pool_region = pool_id.split("_")[0]
 
 	print("== dynamodb tables")
+	dynamodb_client = dynamodb_client_make(config)
 	table_status_print(architect_check(
-		dynamodb_client_make(config), table_name_prefix_of(config)))
+		dynamodb_client, table_name_prefix_of(config)))
+
+	print("== tag service tables (owned by aws_oa _3_tag_and_type)")
+	for tag_table_name in [tag_gen["table_tag"], tag_gen["table_obj_tag"],
+						   tag_gen["table_obj_tag_history"]]:
+		try:
+			dynamodb_client.describe_table(TableName=tag_table_name)
+			print(f"{tag_table_name}: ok")
+		except dynamodb_client.exceptions.ResourceNotFoundException:
+			print(f"{tag_table_name}: MISSING, run the tag service's ensure script")
 
 	print("== cognito app client")
 	cognito = aws_client_make(config, "cognito-idp", pool_region)
@@ -716,8 +774,9 @@ def architecture_delete(config, name_prefix):
 	except Exception as error:
 		print(f"es index NOT deleted (is the home server worker running?): {error}")
 
+	# tag service tables are NOT touched: they belong to aws_oa _3_tag_and_type
 	client = dynamodb_client_make(config)
-	for short_name in TABLE_SPECS:
+	for short_name in [*TABLE_SPECS, *LEGACY_TABLE_NAMES]:
 		full_name = table_full_name(table_name_prefix, short_name)
 		try:
 			client.delete_table(TableName=full_name)

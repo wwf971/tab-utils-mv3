@@ -33,6 +33,14 @@ export interface RemoteWindowItem {
   trashAt?: number | null
 }
 
+// One tag of the tag service (aws_oa _3_tag_and_type), fetched through the
+// /api/tabTag apis. Tags are user specific and cannot be deleted from here.
+export interface RemoteTagItem {
+  id: string
+  name: string
+  parentId: string | null
+}
+
 export interface RemoteContextState {
   tabCenterId: string
   items: RemoteTabItem[]
@@ -74,6 +82,7 @@ export interface RemoteUploadPanelState {
   // processed finishes (success or fail), never in the middle of one tab
   isStopRequested: boolean
   windowIdSelected: string | null // null = the default remote window
+  tagIdsSelected: string[] // tags assigned to every uploaded tab
 }
 
 export interface RemoteAwsCheckData {
@@ -115,6 +124,10 @@ export interface RemoteConfigCheckHistory {
 }
 
 export type RemoteBackendUse = 'local' | 'aws'
+
+// state answered for a selector that has no stored state yet (refer to
+// RemoteStore.selectorState); shared and never mutated
+const SELECTOR_STATE_DEFAULT: RemoteSelectorState = { isOpen: false, searchText: '' }
 
 export class RemoteStore {
   // which backend the popup talks to, persisted in storage.local:
@@ -160,6 +173,19 @@ export class RemoteStore {
   // selector ui states keyed by selector id
   selectorStateById = new Map<string, RemoteSelectorState>()
 
+  // tag cache and the tag selector's search state. one tag selector dropdown
+  // is open at a time, so the search state is shared, not per selector. tag
+  // name search runs on the backend (char-level index of the tag service),
+  // unlike the window selector which filters its local cache.
+  tagById = new Map<string, RemoteTagItem>()
+  tagIdsVisible: string[] = []
+  tagSearchText = ''
+  tagSearchAction: string | null = null
+  tagSearchMessageText = ''
+  isTagCreating = false
+  tagSearchToken = 0
+  tagSearchTimeoutId: ReturnType<typeof setTimeout> | null = null
+
   // remote search
   textInput = ''
   textCommitted = ''
@@ -195,6 +221,8 @@ export class RemoteStore {
       getContextCountSide: false,
       searchToken: false,
       commitTimeoutId: false,
+      tagSearchToken: false,
+      tagSearchTimeoutId: false,
       awsRefreshPromise: false
     }, { autoBind: true })
   }
@@ -210,15 +238,6 @@ export class RemoteStore {
 
   get isBusy() {
     return this.searchAction !== null || this.context?.action != null
-  }
-
-  get isUploadAllowed() {
-    return this.isLoggedIn && this.configCheckHistory?.isUploadAllowed === true
-  }
-
-  get uploadBlockReason() {
-    if (!this.isLoggedIn) return 'Log in to Tab Cloud before uploading'
-    return this.configCheckHistory?.uploadBlockReason || 'Cloud configuration has not been checked'
   }
 
   get isContextMode() {
@@ -272,9 +291,6 @@ export class RemoteStore {
       this.awsExpireAtMs = Number(stored.remote_aws_expire_at ?? 0)
       this.settingsUsername = this.loginDisplayName
     })
-    if (this.isLoggedIn) {
-      await this.configCheckEnsure()
-    }
   }
 
   dispose() {
@@ -283,6 +299,11 @@ export class RemoteStore {
       this.commitTimeoutId = null
     }
     this.searchToken += 1
+    if (this.tagSearchTimeoutId !== null) {
+      clearTimeout(this.tagSearchTimeoutId)
+      this.tagSearchTimeoutId = null
+    }
+    this.tagSearchToken += 1
   }
 
   async call<T = Record<string, unknown>>(path: string, body: Record<string, unknown> = {}) {
@@ -402,7 +423,6 @@ export class RemoteStore {
     this.settingsUsername = this.loginDisplayName
     await chrome.storage.local.set({ remote_backend_use: this.backendUse })
     if (this.isSettingsOpen) void this.statusFetch()
-    if (this.isLoggedIn) void this.configCheckEnsure()
   }
 
   backendDataReset() {
@@ -482,7 +502,6 @@ export class RemoteStore {
         remote_user_id: this.userId
       })
       this.setSettingsMessage('success', `Logged in as ${this.userId}`)
-      void this.configCheckEnsure()
       return true
     })
   }
@@ -517,7 +536,6 @@ export class RemoteStore {
         remote_aws_username: this.awsUsername
       })
       this.setSettingsMessage('success', `Logged in as ${this.awsUsername}`)
-      void this.configCheckEnsure()
       return true
     })
   }
@@ -588,28 +606,9 @@ export class RemoteStore {
     }
   }
 
-  // Make the upload gate reflect the real cloud state right after login or
-  // popup open. isUploadAllowed needs a recorded config check, but the check
-  // history lives in backend process memory (refer to backend/tab_cloud.md,
-  // AWS Integrity and Initialization), so a freshly started backend (for
-  // example an aws lambda cold start) has an empty history even when the
-  // tables and index are fine. When the required checks are missing from the
-  // fetched history, call /api/status once (it runs and records both checks)
-  // and fetch the history again.
-  async configCheckEnsure() {
-    const isFetched = await this.configCheckHistoryFetch()
-    if (!isFetched) return false
-    if (this.configCheckHistory?.isUploadAllowed === true) return true
-    const latestByType = this.configCheckHistory?.latestByType ?? {}
-    const isCheckMissing = !latestByType.dynamodbTables || !latestByType.searchIndex
-    // the checks ran and failed: rerunning them silently cannot help, the
-    // user fixes the cloud side from the settings panel
-    if (!isCheckMissing) return false
-    const statusResult = await this.call('/api/status')
-    if (statusResult.code !== 0) return false
-    return this.configCheckHistoryFetch()
-  }
-
+  // The check history is a settings-panel display only (Check History tab and
+  // the check summary line). It never gates any operation: a not-ready cloud
+  // side surfaces as the failing operation's own error.
   async configCheckHistoryFetch() {
     if (!this.isLoggedIn) return false
     const result = await this.call<RemoteConfigCheckHistory>(
@@ -853,17 +852,29 @@ export class RemoteStore {
     }
   }
 
+  // Read-only lookup used by component renders: a selector without stored
+  // state is closed with an empty search text. It must not create the entry:
+  // a render must not mutate the store.
   selectorState(selectorId: string): RemoteSelectorState {
+    return this.selectorStateById.get(selectorId) ?? SELECTOR_STATE_DEFAULT
+  }
+
+  // Used by the mutating methods. The returned object is always re-read from
+  // the observable map: the map wraps a set plain object into an observable
+  // proxy, so returning the plain object itself would hand out state whose
+  // reads are untracked and whose mutations notify nobody (the dropdown then
+  // opens only when some unrelated observable happens to change).
+  selectorStateEnsure(selectorId: string): RemoteSelectorState {
     let state = this.selectorStateById.get(selectorId)
     if (!state) {
-      state = { isOpen: false, searchText: '' }
-      this.selectorStateById.set(selectorId, state)
+      this.selectorStateById.set(selectorId, { isOpen: false, searchText: '' })
+      state = this.selectorStateById.get(selectorId) as RemoteSelectorState
     }
     return state
   }
 
   selectorSetOpen(selectorId: string, isOpen: boolean) {
-    const state = this.selectorState(selectorId)
+    const state = this.selectorStateEnsure(selectorId)
     state.isOpen = isOpen
     if (isOpen) {
       state.searchText = ''
@@ -873,7 +884,7 @@ export class RemoteStore {
   }
 
   selectorSetSearchText(selectorId: string, searchText: string) {
-    this.selectorState(selectorId).searchText = searchText
+    this.selectorStateEnsure(selectorId).searchText = searchText
   }
 
   selectorClear(selectorId: string) {
@@ -887,6 +898,90 @@ export class RemoteStore {
     return this.windowIds.filter((windowId) => {
       const windowItem = this.windowById.get(windowId)
       return (windowItem?.title ?? '').toLocaleLowerCase().includes(searchText)
+    })
+  }
+
+  // -------------------------------------------------------------------------
+  // tags (the /api/tabTag apis of the tag service)
+  // -------------------------------------------------------------------------
+
+  tagSelectorSetOpen(selectorId: string, isOpen: boolean) {
+    const state = this.selectorStateEnsure(selectorId)
+    state.isOpen = isOpen
+    if (isOpen) {
+      this.tagSearchText = ''
+      this.tagSearchMessageText = ''
+      void this.tagSearch()
+    }
+  }
+
+  setTagSearchText(text: string) {
+    this.tagSearchText = text
+    this.tagSearchToken += 1
+    const tagSearchToken = this.tagSearchToken
+    if (this.tagSearchTimeoutId !== null) clearTimeout(this.tagSearchTimeoutId)
+    this.tagSearchTimeoutId = setTimeout(() => {
+      this.tagSearchTimeoutId = null
+      if (tagSearchToken !== this.tagSearchToken) return
+      void this.tagSearch()
+    }, 180)
+  }
+
+  // empty search text lists every tag of the user; otherwise the backend
+  // searches the tag names (any substring, case-insensitive)
+  async tagSearch() {
+    if (!this.isLoggedIn) {
+      this.tagSearchMessageText = 'Not logged in'
+      return false
+    }
+    const searchText = this.tagSearchText.trim()
+    this.tagSearchToken += 1
+    const tagSearchToken = this.tagSearchToken
+    this.tagSearchAction = 'search'
+    const result = searchText
+      ? await this.call<{ tagList: RemoteTagItem[] }>(
+        '/api/tabTag/search', { query: searchText, limit: 50 })
+      : await this.call<{ tagList: RemoteTagItem[] }>('/api/tabTag/list')
+    return runInAction(() => {
+      if (tagSearchToken !== this.tagSearchToken) return false
+      this.tagSearchAction = null
+      if (result.code !== 0 || !result.data) {
+        this.tagIdsVisible = []
+        this.tagSearchMessageText = result.message ?? 'Tag search failed'
+        return false
+      }
+      for (const tag of result.data.tagList) {
+        this.tagById.set(tag.id, tag)
+      }
+      this.tagIdsVisible = result.data.tagList.map((tag) => tag.id)
+      this.tagSearchMessageText = ''
+      return true
+    })
+  }
+
+  // in-place tag creation from the selector; returns the new tag id. the
+  // created tag lands in the cache and at the top of the current dropdown
+  // list (it matches the entered text). it is not selected automatically:
+  // the user clicks the listed tag to add it to the selection.
+  async tagCreate(name: string): Promise<string | null> {
+    const nameTrimmed = name.trim()
+    if (!nameTrimmed || this.isTagCreating) return null
+    this.isTagCreating = true
+    const result = await this.call<{ tag: RemoteTagItem }>(
+      '/api/tabTag/create', { name: nameTrimmed })
+    return runInAction(() => {
+      this.isTagCreating = false
+      if (result.code !== 0 || !result.data) {
+        this.tagSearchMessageText = result.message ?? 'Tag creation failed'
+        return null
+      }
+      const tag = result.data.tag
+      this.tagById.set(tag.id, tag)
+      if (!this.tagIdsVisible.includes(tag.id)) {
+        this.tagIdsVisible = [tag.id, ...this.tagIdsVisible]
+      }
+      this.tagSearchMessageText = ''
+      return tag.id
     })
   }
 
@@ -1263,8 +1358,8 @@ export class RemoteStore {
   // -------------------------------------------------------------------------
 
   openUploadPanel(tabList: RemoteUploadTab[], sourceText: string) {
-    if (!this.isUploadAllowed) {
-      this.setMessage('error', this.uploadBlockReason)
+    if (!this.isLoggedIn) {
+      this.setMessage('error', 'Log in to Tab Cloud before uploading')
       return false
     }
     this.uploadPanel = {
@@ -1273,15 +1368,16 @@ export class RemoteStore {
       isCloseOnSuccess: true,
       isApplying: false,
       isStopRequested: false,
-      windowIdSelected: null
+      windowIdSelected: null,
+      tagIdsSelected: []
     }
     this.uploadPanelOpenCount += 1
     return true
   }
 
   async openUploadPanelForWindow(windowSourceId: number) {
-    if (!this.isUploadAllowed) {
-      this.setMessage('error', this.uploadBlockReason)
+    if (!this.isLoggedIn) {
+      this.setMessage('error', 'Log in to Tab Cloud before uploading')
       return false
     }
     const tabs = await chrome.tabs.query({ windowId: windowSourceId })
@@ -1308,6 +1404,10 @@ export class RemoteStore {
 
   setUploadWindowId(windowId: string | null) {
     if (this.uploadPanel) this.uploadPanel.windowIdSelected = windowId
+  }
+
+  setUploadTagIds(tagIds: string[]) {
+    if (this.uploadPanel) this.uploadPanel.tagIdsSelected = tagIds
   }
 
   // Stop button of the running upload. The run breaks after the tab currently
@@ -1343,9 +1443,6 @@ export class RemoteStore {
     if (!this.isLoggedIn) {
       return { isOk: false, messageText: 'Not logged in. Open the Remote tab settings to log in' }
     }
-    if (!this.isUploadAllowed) {
-      return { isOk: false, messageText: this.uploadBlockReason }
-    }
     panel.isApplying = true
     panel.isStopRequested = false
     for (const tab of panel.tabList) {
@@ -1368,6 +1465,7 @@ export class RemoteStore {
           tabList: [{ title: tab.title, url: tab.url }]
         }
         if (windowId) body.windowId = windowId
+        if (panel.tagIdsSelected.length > 0) body.tagIdList = [...panel.tagIdsSelected]
         const result = await this.call<{ windowId: string }>('/api/tab/create', body)
         if (result.code !== 0 || !result.data) {
           runInAction(() => {

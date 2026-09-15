@@ -11,11 +11,12 @@ The search panel lets the user find open tabs, select results, and act on them. 
 
 ### Panel modes
 
-A segmented control above the Search tab switches between three top-level panel modes:
+A segmented control above the Search tab switches between four top-level panel modes:
 
 - `Search` shows the search field and the matched tabs (the result views below).
 - `All Windows` shows the complete live windows tree: every window at the left side, the selected window's tabs at the right.
 - `Selected Tabs` shows only the browser-selected (highlighted) tabs of each window. Chrome and Firefox allow selecting multiple tabs in a window (ctrl/shift+click on the tab bar); this mode exists to act on such a selection in one run, typically uploading it to remote through the right-click menu.
+- `Current Tab` shows only the currently active tab (the active tab of the window the user was in before opening the popup, with a refresh icon next to the header). Its upload button opens the shared remote upload popup prefilled with this one tab; tags — searched or created in place with the remote tag selector — and the target window are picked there. Refer to `/backend/tab_cloud.md`, Upload from the Search tab.
 
 All modes and views render through the shared `WindowTabView` component of `@wwf971/tab-manage-frontend-common` (window sidebar + tab table). Its appearance is a view mode: `table` renders index/title/url/group/state columns; `item` renders one `TabItem` per tab (icon, title over url, status marks), which is what every panel mode here uses. The sidebar can be hidden, which is how the flat `list` result view is rendered. In `All Windows` and `Selected Tabs` the status marks are hidden, and the view fills the remaining popup height instead of using a fixed table height.
 

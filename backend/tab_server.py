@@ -56,7 +56,17 @@ def load_config():
 config = load_config()
 # the aws config has its own two layers under backend-aws, next to the IaC
 # scripts that also read it. refer to backend-aws/ensure_architect.py.
-config["aws"] = ensure_architect.config_load().get("aws", {})
+config_aws = ensure_architect.config_load()
+config["aws"] = config_aws.get("aws", {})
+# tag service binding (tables + name index of aws_oa _3_tag_and_type), read
+# from that sub-project's generated config; without it the server still runs,
+# only the tabTag apis answer with a cloud error. refer to tab_cloud.md#tags.
+try:
+	config["tag_service"] = ensure_architect.aws_oa_gen_load(
+		config_aws, "_3_tag_and_type")["tag_type"]
+except SystemExit as error:
+	print(f"tag service not bound, the tabTag apis are unavailable: {error}")
+	config["tag_service"] = {}
 db.init_db(config)
 index.init_index(config)
 core.core_init(index)

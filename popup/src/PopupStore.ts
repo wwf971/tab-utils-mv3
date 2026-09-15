@@ -109,7 +109,7 @@ export const recoveryReplayTargetDefault: RecoveryReplayTarget = {
 export const tabContextCountSideDefault = 10
 export const recoveryEventColCountDefault = 2
 
-export type SearchWorkspaceMode = 'search' | 'all' | 'selected'
+export type SearchWorkspaceMode = 'search' | 'all' | 'selected' | 'current'
 export type TabSearchViewMode = 'list' | 'window'
 export const tabSearchViewModeDefault: TabSearchViewMode = 'list'
 
@@ -202,6 +202,15 @@ export class PopupStore {
   tabContextCountSide = tabContextCountSideDefault
   // Top-level panel mode. Full display is separate from search-result views.
   searchWorkspaceMode: SearchWorkspaceMode = 'search'
+  // The currently active tab shown by the 'current' mode, loaded when the
+  // mode is entered or refreshed.
+  tabCurrentActive: {
+    tabSourceId: number
+    title: string
+    url: string
+    favIconUrl: string
+  } | null = null
+  isTabCurrentLoading = false
   // Inside search mode, results can be one list or grouped by window.
   searchViewCurrent: TabSearchViewMode = tabSearchViewModeDefault
   // Configured default view, applied when the popup opens.
@@ -401,24 +410,61 @@ export class PopupStore {
 
   // Upload panel in the Search tab: openers resolve the local tabs to upload;
   // the apply result lands in the search message line.
-  openRemoteUploadForTabs(tabs: RemoteUploadTab[]) {
+  openRemoteUploadForTabs(tabs: RemoteUploadTab[], sourceText = 'selected tabs') {
     if (tabs.length === 0) {
       this.tabSearch.setMessage('error', 'Select at least one tab to upload')
       return
     }
-    if (!this.remote.isUploadAllowed) {
-      this.tabSearch.setMessage('error', this.remote.uploadBlockReason)
+    if (!this.remote.isLoggedIn) {
+      this.tabSearch.setMessage('error', 'Log in to Tab Cloud before uploading')
       return
     }
-    this.remote.openUploadPanel(tabs, 'selected tabs')
+    this.remote.openUploadPanel(tabs, sourceText)
   }
 
   async openRemoteUploadForWindow(windowSourceId: number) {
-    if (!this.remote.isUploadAllowed) {
-      this.tabSearch.setMessage('error', this.remote.uploadBlockReason)
+    if (!this.remote.isLoggedIn) {
+      this.tabSearch.setMessage('error', 'Log in to Tab Cloud before uploading')
       return
     }
     await this.remote.openUploadPanelForWindow(windowSourceId)
+  }
+
+  // The active tab of the 'Current Tab' mode. Opening the popup clears the
+  // focused flags, so lastFocusedWindow points at the browser window the user
+  // was in before the popup opened (same as loadWindowsAll).
+  async loadTabCurrentActive() {
+    if (this.isTabCurrentLoading) return
+    this.isTabCurrentLoading = true
+    const tabsActive = await chrome.tabs.query(
+      { active: true, lastFocusedWindow: true }).catch(() => [])
+    runInAction(() => {
+      this.isTabCurrentLoading = false
+      const tabActive = tabsActive[0]
+      this.tabCurrentActive = Number.isInteger(tabActive?.id)
+        ? {
+          tabSourceId: tabActive.id as number,
+          title: tabActive.title ?? '',
+          url: tabActive.url ?? '',
+          favIconUrl: tabActive.favIconUrl ?? ''
+        }
+        : null
+    })
+  }
+
+  // Upload of the 'Current Tab' mode: the upload panel opens with just the
+  // active tab; tags and the target window are picked inside the panel.
+  openRemoteUploadForCurrentTab() {
+    const tab = this.tabCurrentActive
+    if (!tab) {
+      this.tabSearch.setMessage('error', 'No active tab found. Use Refresh')
+      return
+    }
+    this.openRemoteUploadForTabs([{
+      tabSourceId: tab.tabSourceId,
+      title: tab.title,
+      url: tab.url
+    }], 'the current tab')
   }
 
   async applyRemoteUpload() {
@@ -514,7 +560,12 @@ export class PopupStore {
   setSearchWorkspaceMode(mode: unknown) {
     this.searchWorkspaceMode = mode === 'all'
       ? 'all'
-      : mode === 'selected' ? 'selected' : 'search'
+      : mode === 'selected'
+        ? 'selected'
+        : mode === 'current' ? 'current' : 'search'
+    if (this.searchWorkspaceMode === 'current') {
+      void this.loadTabCurrentActive()
+    }
     // Entering full display selects the window that currently holds the
     // focused tab, so the sidebar starts on the window the user was in.
     if (this.isWindowsAllUsed) {

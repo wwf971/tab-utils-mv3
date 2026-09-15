@@ -8,6 +8,7 @@
 #   index_ensure / index_recreate / index_check
 #   doc_put / doc_delete / doc_put_batch / doc_delete_batch
 #   search(user_id, query_tree, field_list, is_trashed, limit)
+#   tag_name_put / tag_name_search      (tag name index of the tag service)
 #
 # document writes are enqueue-and-return: enqueue success counts as write
 # success, the fifo queue keeps the write order per index, and the worker
@@ -47,16 +48,17 @@ _db = None
 _queue_url = None
 _table_result = None
 _index_name = "tab_cloud_tab"
+_index_tag_name = "3_tag"
 _result_timeout_sec = 20.0
 _result_poll_sec = 0.25
 
 
 def init_index(index_config):
-	"""index_config: {queue_url, table_result, index_name, region_name?,
-	access_key_id?, secret_access_key?, result_timeout?, result_poll_interval?}.
-	the lambda builds it from env, ensure_architect.py builds it from the
-	local es service's config_gen.yaml."""
-	global _sqs, _db, _queue_url, _table_result, _index_name
+	"""index_config: {queue_url, table_result, index_name, index_tag_name?,
+	region_name?, access_key_id?, secret_access_key?, result_timeout?,
+	result_poll_interval?}. the lambda builds it from env, ensure_architect.py
+	builds it from the local es service's config_gen.yaml."""
+	global _sqs, _db, _queue_url, _table_result, _index_name, _index_tag_name
 	global _result_timeout_sec, _result_poll_sec
 	kwargs = {}
 	if index_config.get("region_name"):
@@ -69,6 +71,7 @@ def init_index(index_config):
 	_queue_url = index_config["queue_url"]
 	_table_result = index_config["table_result"]
 	_index_name = index_config.get("index_name", "tab_cloud_tab")
+	_index_tag_name = index_config.get("index_tag_name") or "3_tag"
 	_result_timeout_sec = float(index_config.get("result_timeout", 20))
 	_result_poll_sec = float(index_config.get("result_poll_interval", 0.25))
 
@@ -82,14 +85,15 @@ def _task_id_make():
 	return "".join(random.choices(string.digits + string.ascii_lowercase, k=16))
 
 
-def _task_send(action, payload):
+def _task_send(action, payload, message_group=None):
 	task_id = _task_id_make()
 	task = {"task_id": task_id, "action": action, "payload": payload}
 	try:
 		_sqs.send_message(
 			QueueUrl=_queue_url,
 			MessageBody=json.dumps(task),
-			MessageGroupId=_index_name,  # fifo: keeps the write order per index
+			# fifo: keeps the write order per index
+			MessageGroupId=message_group or _index_name,
 			MessageDeduplicationId=task_id,
 		)
 	except Exception as error:
@@ -113,8 +117,8 @@ def _result_wait(task_id):
 		" is the es worker running on the home server?")
 
 
-def _task_run(action, payload):
-	result = _result_wait(_task_send(action, payload))
+def _task_run(action, payload, message_group=None):
+	result = _result_wait(_task_send(action, payload, message_group))
 	if result.get("code", -1) != 0:
 		raise IndexUnavailableError(result.get("message") or f"{action} failed")
 	return result.get("data")
@@ -246,17 +250,51 @@ def search(user_id, query_tree, field_list, is_trashed, limit):
 		"filter_exact": {"userId": user_id, "isTrashed": bool(is_trashed)},
 		"limit": limit,
 	})
-	results = []
-	for hit in data or []:
-		results.append({
-			"tabId": hit["doc_id"],
-			"matchList": [
-				{
-					"field": match["field"],
-					"indexStart": match["index_start"],
-					"indexEnd": match["index_end"],
-				}
-				for match in hit.get("match_list", [])
-			],
-		})
-	return results
+	return [
+		{"tabId": hit["doc_id"], "matchList": _match_list_response(hit)}
+		for hit in data or []
+	]
+
+
+def _match_list_response(hit):
+	return [
+		{
+			"field": match["field"],
+			"indexStart": match["index_start"],
+			"indexEnd": match["index_end"],
+		}
+		for match in hit.get("match_list", [])
+	]
+
+
+# ---------------------------------------------------------------------------
+# tag name index: the 3_tag index of the tag service (aws_oa _3_tag_and_type)
+# on the same local es service. its doc shape is {name, user_id}, doc id = tag
+# id. unlike the tab document writes above, tag_name_put WAITS for the
+# worker's confirmation: the tag service design indexes the name first and
+# only touches dynamodb after the index is confirmed, so a tag is never
+# created without being char-searchable. refer to tab_cloud.md#tags.
+# ---------------------------------------------------------------------------
+
+def tag_name_put(tag_id, name, user_id):
+	_task_run("doc_put", {
+		"index_name": _index_tag_name,
+		"doc_id": tag_id,
+		"doc": {"name": name, "user_id": user_id},
+	}, message_group=_index_tag_name)
+
+
+def tag_name_search(user_id, query_text, limit):
+	# returns [{"tagId": ..., "matchList": [{"field", "indexStart", "indexEnd"}]}]
+	data = _task_run("search", {
+		"index_name": _index_tag_name,
+		"config_name": INDEX_CONFIG_NAME,
+		"query_tree": query_text,
+		"field_list": ["name"],
+		"filter_exact": {"user_id": user_id},
+		"limit": limit,
+	}, message_group=_index_tag_name)
+	return [
+		{"tagId": hit["doc_id"], "matchList": _match_list_response(hit)}
+		for hit in data or []
+	]

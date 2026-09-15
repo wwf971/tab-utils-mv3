@@ -32,7 +32,7 @@ For the concrete api list, refer to [Tab cloud api](./tab_cloud_api.md).
 
 ## Core Concepts and Their Data Format
 
-There are six DynamoDB tables, named `{table_name_prefix}` + `Window` / `Tab` / `Tag` / `TabTag` / `Group` / `Meta`. `PK`/`SK` mark the table primary key; `GSI` marks a global secondary index.
+There are four DynamoDB tables owned by this project, named `{table_name_prefix}` + `Window` / `Tab` / `Group` / `Meta`. Tags live in the tables of the external tag service and are only accessed from here (refer to [Tags](#tags)). `PK`/`SK` mark the table primary key; `GSI` marks a global secondary index.
 
 Every table is partitioned by `userId`, so all list/slice reads are one Query on the user's partition. Random ids conform to `id-format.md`; time fields conform to `time-format.md` (epoch ms + optional timezone integer, unit hour).
 
@@ -67,7 +67,7 @@ createAtTimezone # optional, integer, using +09 to represent UTC+09 timezone
 modifyAt         # optional, created only after first modification
 modifyAtTimezone # optional
 
-tagIdList        # display copy of tag membership; the relationship table is the truth
+tagIdList        # display copy of tag membership; the tag service's obj-tag table is the truth
 groupId          # optional, refer to Tab Group
 contentRevision  # integer, +1 on every title/url change, used by index sync
 
@@ -91,39 +91,42 @@ previous n tabs             -> query userId, live#{windowId}# < tabPath < live#{
 
 These slice queries are what the remote context mode is built on.
 
-Looking a tab up by id alone uses the GSI `gsiTabId`. Because tabPath is a key attribute, moving a tab means delete + put of the tab item inside one transaction, plus rewriting the tabPath copies in its tag relationship items.
+Looking a tab up by id alone uses the GSI `gsiTabId`. Because tabPath is a key attribute, moving a tab means delete + put of the tab item inside one transaction.
 
 ### Tags
 
-Tabs are allowed to have unfixed number of tags. Tags are stored as items in a tag table. 
-The relationship that a tab has a tag is stored in a separate table.
-And tabs mainly record the tag they have by tag id, not tag name. 
-
-A tag item's data format:
+Tabs are allowed to have an unfixed number of tags. Tags are not stored in tables of this project: they are entities of the tag service (aws_oa sub-project `_3_tag_and_type`, refer to its `tag_type_service_impl.md`), and tab cloud reads/writes that service's DynamoDB tables directly, for its `tab` objects only. Tags are user specific, like every other object here. Three tag service tables are touched:
 
 ```text
-userId(PK)
-tagName(SK)      # lists one user's tags in name order, makes the name unique
-id               # GSI gsiTagId: (id)
-color            # optional
-createAt
-createAtTimezone
+tag entity table (PK user_id, SK tag_id)
+  name             # unique per user, enforced by tab cloud on create
+  is_history_enabled, create_at/_timezone, modify_at/_timezone
+
+obj-tag table (PK obj_id, SK tag_id)     # one attach entry per tab-has-tag
+  obj_id           # = the tab id
+  user_id
+  lexorank         # order of the tags of one tab; the tag service's lexorank
+                   # rule applies: a rank never ends with '0'
+  create_at/_timezone
+                   # GSI gsi_tag_id: (tag_id, obj_id), INCLUDE user_id
+
+obj-tag-history table (PK obj_id, SK time_key)  # one attach/detach record per change
 ```
 
-A tab--have-->tag relationship item format:
+The physical table names and the name index of the tag service come from that sub-project's `config_gen.yaml`; ensure_architect.py wires them into the lambda env, and the local server reads them at startup (refer to `../backend-aws/aws_backend_impl.md`).
 
-```text
-tagId(PK)
-tabPath(SK)      # denormalized copy of the tab's live tabPath
-tabId            # GSI gsiTabTag: (tabId, tagId), finds the relationship items of one tab
-userId
-createAt
-createAtTimezone
-```
+Both query directions are efficient:
 
-It is allowed to have some demormalization by putting some tabPath into the relationship item, so we can use tabPath as the sort Key: querying one tag partition returns its tabs already in window order, without reading every tab item first. The cost is that moving a tab must rewrite that tab's relationship items (found through gsiTabTag) in the same transaction; a tab has few tags, so this stays cheap.
+- tags of a tab: the tab item's `tagIdList` is the denormalized display copy; the obj-tag partition of the tab id is the truth, in lexorank order.
+- tabs of a tag: one query on `gsi_tag_id` with the tag id, then join the tab items by id (dropping trashed tabs and other users' entries).
 
-Trashing a tab keeps its relationship items untouched; tag listing joins with tab items by id and drops trashed tabs. Renaming a tag is delete + put of the tag item (tagName is its SK) and touches nothing else, because tabs reference tags by id. Deleting a tag deletes its relationship items and removes the tagId from each member tab's `tagIdList`.
+The attach entries live in DynamoDB next to this project's tables, so every tag change joins the tab cloud transaction: assigning/removing a tag writes the attach entry, one history record, and the tab item's `tagIdList` in one `TransactWriteItems`; uploading a tab with tags writes the tab item and its attach entries together. Attach entries are keyed by the tab id (not tabPath), so moving/trashing/restoring a tab does not touch them. Permanently deleting a tab deletes its attach entries in the same transaction; the history records (unbounded count) are wiped after the transaction, orphans are harmless because nothing reads history by a deleted tab id.
+
+Tag names are searched through the tag service's own char-level index (`3_tag`, document `{name, user_id}`, document id = tag id) living on the same local es service as the tab index. Creating a tag follows the tag service's rule: the name is indexed first and the worker's confirmation is awaited, only then the entity is written to DynamoDB, so a tag can never exist without being char-searchable.
+
+Renaming and deleting a tag are not offered from tab cloud for the time being.
+
+Trashing a tab keeps its attach entries untouched; tabs-of-tag listing joins with tab items by id and drops trashed tabs.
 
 ### Tab Group
 
@@ -310,7 +313,9 @@ The simple case is one query string. The search api also accepts a query tree, s
 
 Every api that writes more than one item writes them in one `TransactWriteItems` call, so a request either applies completely or not at all. This includes batch apis: uploading a batch of tabs, trashing/restoring/permanently-deleting a batch, moving a batch, assigning a tag to a batch. One transaction holds at most 100 items, so batch apis cap their input (refer to the api doc) and reject larger input with `-4` instead of splitting silently.
 
-Key-changing operations (move, trash, restore, tag rename) are a delete + put of the same item inside the transaction. Puts of new keys carry an `attribute_not_exists` condition, so a rank collision or a concurrent duplicate aborts the whole transaction instead of overwriting.
+Key-changing operations (move, trash, restore) are a delete + put of the same item inside the transaction. Puts of new keys carry an `attribute_not_exists` condition, so a rank collision or a concurrent duplicate aborts the whole transaction instead of overwriting.
+
+Transactions are not limited to this project's tables: tag changes put/delete items of the tag service's obj-tag tables in the same `TransactWriteItems` call (refer to [Tags](#tags)); DynamoDB transactions work across tables in one region.
 
 ### Consistency between DynamoDB and index
 
@@ -391,7 +396,7 @@ tabMove(tabIdList, targetTabId, placement)
   -> calc new ranks between the target's neighbors (target window may differ)
   -> decide group join / leave by the continuity rule
   -> transactWrite: delete + put each tab item with its new tabPath,
-     rewrite their relationship items, delete groups left empty
+     delete groups left empty
 ```
 
 Searching:
@@ -406,7 +411,7 @@ search(query, isSearchTitle, isSearchUrl, isTrashed, limit)
 
 Trash, restore, and permanent delete follow the journal workflow above; refer to [Trash](#trash).
 
-Assigning a tag writes the relationship item and the tab item's `tagIdList` in one transaction. The relationship table is the truth for membership, `tagIdList` is a display copy.
+Assigning a tag writes the attach entry, one history record (both in the tag service's tables), and the tab item's `tagIdList` in one transaction. The obj-tag table is the truth for membership, `tagIdList` is a display copy. Refer to [Tags](#tags).
 
 ## Auth and Config
 
@@ -432,29 +437,19 @@ Every config check is added to a bounded backend cache. A record contains
 `checkId`, `checkType`, `checkAtMs`, `isPassed`, `trigger`, and the typed check
 result. The cache keeps the newest 50 records in backend-process memory. A
 history query returns a shorter newest-first list, the latest record of each
-type, and the derived upload readiness.
+type, and a derived summary of the latest required checks (both required
+check types recorded and passed, or the reason why not).
 
-```text
-latest DynamoDB table check passed
-  + latest search index check passed
-    -> upload allowed
-
-missing or failed latest required check
-    -> upload blocked
-    -> user runs the relevant check
-    -> passing result removes the block
-```
-
-The popup fetches cached checks after loading a saved login and after login.
-The cache lives in backend-process memory, so a freshly started backend (for
-example an aws lambda cold start) reports no checks right after login even
-when the tables and index are fine. When the required checks are missing from
-the fetched history, the popup calls `/api/status` once — it runs and records
-both config checks — and fetches the history again, so the upload menu items
-are usable right after login without visiting the settings panel.
-Upload entry points, including right-click menu items and the final Apply
-action, use the same readiness state. The cloud settings panel has separate
-DynamoDB Tables, Search Index, and Check History tabs.
+Config checks run only when explicitly requested: from the cloud settings
+panel (each resource tab's check/initialize actions, the status refresh) or by
+calling `/api/status` directly. The extension never checks the cloud
+configuration on its own — opening the popup, logging in, or entering a panel
+mode sends no check request. Consequently no operation is gated on check
+results: upload and every other remote feature only require a login, and a
+not-ready cloud side surfaces as the failing operation's own error (the
+per-tab error of an upload row, the search message line, and so on). The
+cloud settings panel shows the check summary and has separate DynamoDB
+Tables, Search Index, and Check History tabs.
 
 The older combined `awsCheck` and `awsInit` apis remain compatible, but the
 popup uses the separate operations. All apis answer `-5` with a short message
@@ -514,10 +509,13 @@ right-click menu
 upload confirm popup
   ├─ list of tabs to upload, each row showing its own upload state
   ├─ target: remote window selector (default: the default remote window)
+  ├─ tags: remote tag selector (default: none); every uploaded tab gets them
   ├─ [x] close each uploaded tab after its upload is confirmed   # default on
   ├─ progress line (uploaded / failed counts) while the run is active
   └─ Upload / Stop / Cancel
 ```
+
+The 'Current Tab' panel mode of the Search tab is a third opener: it shows only the currently active tab and its upload button opens the same confirm popup prefilled with that one tab (refer to `/doc/tab_ops.md`).
 
 Tabs upload one by one, each in its own api call, so partial failure is allowed: a failed tab is marked with its error and does not block the remaining tabs. A tab is closed right after the backend confirms its own upload (when the checkbox is on), never in a batch at the end, so a browser crash in the middle loses no tab that is not stored remotely yet.
 
@@ -537,7 +535,13 @@ The first successful upload decides the target window when none is chosen; every
 
 ### Remote window selector
 
-A reusable selector component (conforming to `selector.md`): a search-bar-like area showing the selected window as a tag with a cross icon, and an edit icon opening a dropdown with a search field, a Fetch All button, and the window list. Clicking outside the selector closes the dropdown. It searches the store's cached windows first and asks the server at a bounded frequency; results are cached in the store keyed by id, and each selector instance keeps its own ui state in the store keyed by a selector id, cleared on unmount. It is used by the upload panel and by trash restore.
+A reusable selector component (conforming to `selector.md`): a search-bar-like area showing the selected window as a tag with a cross icon, and a chevron pointing down at the right. Clicking the bar or the chevron toggles a dropdown with a search field, a Fetch All button, and the window list; clicking outside the selector also closes the dropdown. The tag's cross icon only clears the selection, without toggling the dropdown. It searches the store's cached windows first and asks the server at a bounded frequency; results are cached in the store keyed by id, and each selector instance keeps its own ui state in the store keyed by a selector id, cleared on unmount. It is used by the upload panel and by trash restore.
+
+### Remote tag selector
+
+The tag counterpart (multi selection): picked tags show as chips with a cross icon, the dropdown search field queries `/api/tabTag/search` (the backend char index) instead of filtering a local cache — an empty search text lists every tag via `/api/tabTag/list`. When no listed tag matches the entered text exactly, the first row offers creating that tag in place (`/api/tabTag/create`); the created tag is not selected automatically — it shows at the top of the list (it matches the entered text) and the user clicks it to add it to the selection. Fetched tags are cached in the store keyed by id for chip display. It is used by the upload panel's tags row.
+
+Both selector dropdowns open immediately on click and show a spinning circle while their server request (window fetch, tag list/search) is running, so a slow backend never blocks opening the dropdown.
 
 ### Toward one unified search bar
 

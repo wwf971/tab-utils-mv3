@@ -47,7 +47,8 @@ const SearchWorkspaceModeControl = observer(function SearchWorkspaceModeControl(
           segList: [
             { value: 'search', labelText: 'Search' },
             { value: 'all', labelText: 'All Windows' },
-            { value: 'selected', labelText: 'Selected Tabs' }
+            { value: 'selected', labelText: 'Selected Tabs' },
+            { value: 'current', labelText: 'Current Tab' }
           ]
         }}
         config={{ isDisabled: store.tabSearch.isBusy || store.isWindowsAllLoading }}
