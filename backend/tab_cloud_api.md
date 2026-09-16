@@ -17,6 +17,7 @@ Concrete api list of the backend server. For concepts and storage design, refer 
 ```
 
 - List apis page with a cursor: pass `cursor` from the previous response to get the next page; a response without `cursor` is the last page. `limit` defaults to 100.
+- Search-like apis (`/api/search`, `/api/tabTag/list`, `/api/tabTag/search`) page with `offset` + `limit` instead, and answer `isMore`: whether more results exist past `offset + limit`. Their defaults and caps live in `tab_server_params.py`.
 - Batch apis run in one DynamoDB transaction. `tabIdList` / `tabList` inputs are capped at 40 per request (a transaction holds at most 100 items); larger input is rejected with `-4`.
 - A tab object in responses always has this shape (`matchList` only appears in search results, trash fields only on trashed tabs):
 
@@ -200,11 +201,11 @@ Tags are entities of the external tag service; refer to `tab_cloud.md#tags`. A t
 
 ### POST /api/tabTag/list
 
-request `{tabId?}` → data `{tagList}`. Without `tabId`: every tag of the user, ordered by name. With `tabId`: the tags of that tab, in attach order.
+request `{tabId?, offset?, limit?}` → data `{tagList, isMore}`. Without `tabId`: the user's tags ordered by name, paged with `offset`/`limit` (default page 50, cap 200). With `tabId`: the tags of that tab, in attach order — one tab carries few tags, so this mode is not paged (`isMore` is always false).
 
 ### POST /api/tabTag/search
 
-request `{query, limit?}` → data `{tagList}`, each with `matchList` over the `name` field. Searches the tag service's char-level name index: any substring, case-insensitive.
+request `{query, offset?, limit?}` → data `{tagList, isMore}`, each tag with `matchList` over the `name` field. Searches the tag service's char-level name index: any substring, case-insensitive. Paged like `/api/tabTag/list`; at most the top 500 index hits are considered, paging stops there.
 
 ### POST /api/tabTag/create
 
@@ -257,10 +258,13 @@ request `{windowDefaultId}` — must be an existing live window.
   "isSearchTitle": true,
   "isSearchUrl": true,
   "isTrashed": false,        // true searches inside the trash
-  "limit": 100
+  "tagIdList": [],           // optional tag filter: results must carry ALL these tags
+  "offset": 0,               // pagination start; default 0
+  "limit": 100               // one page; default 100, cap 500
 }
 // data
 {
+  "isMore": false,           // more results exist past offset + limit
   "tabList": [
     {
       // ... normal tab object fields ...
@@ -274,6 +278,13 @@ request `{windowDefaultId}` — must be an existing live window.
 ```
 
 Matching is case-insensitive pure substring matching. `indexStart`/`indexEnd` are char positions over the original text, end exclusive, for frontend highlighting. At least one of `isSearchTitle` / `isSearchUrl` must be true.
+
+Pagination is by `offset` + `limit` over one stable result order (the index ranking; tags-only listing: window order / trash newest first). A text search never considers more than the top 500 index hits: past that window `isMore` answers false and paging stops. A joined page can hold slightly fewer than `limit` items when hits were dropped as stale.
+
+`tagIdList` narrows the results to tabs carrying all the given tags (membership from the tag service's obj-tag table; refer to `tab_cloud.md#tags`). A tag id that does not exist fails with `-3`. Without a tag filter, `query` is required and the behavior is unchanged. With a tag filter:
+
+- `query` may be empty: the response then lists the tabs carrying all the tags straight from DynamoDB (live scope in window order, trash scope newest first), without `matchList`.
+- with a `query`, the top 500 index hits are fetched and the tag filter is applied before the `offset`/`limit` cut, so untagged hits never consume the page.
 
 ## Maintenance
 

@@ -416,6 +416,7 @@ LAMBDA_FILE_LIST = [
 	"ensure_architect.py",
 	"../backend/tab_server_core.py",
 	"../backend/tab_server_check.py",
+	"../backend/tab_server_params.py",
 ]
 
 

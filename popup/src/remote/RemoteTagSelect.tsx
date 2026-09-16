@@ -14,10 +14,12 @@ import './RemoteTagSelect.css'
 // picked tags show as chips with a cross icon; clicking the bar (or its
 // chevron at the right) toggles a dropdown open/closed, whose search field
 // queries the backend tag name index (unlike the window selector, which
-// filters a local cache). When no listed tag matches the entered text
-// exactly, a create row offers making the tag in place; the created tag is
-// not selected automatically — it shows in the list (it matches the entered
-// text) and the user clicks it to select it.
+// filters a local cache). When isCreateAllowed and no listed tag matches the
+// entered text exactly, a create row offers making the tag in place; the
+// created tag is not selected automatically — it shows in the list (it
+// matches the entered text) and the user clicks it to select it. Callers
+// that only filter by existing tags (the remote search tag filter) pass
+// isCreateAllowed=false, which hides the create row.
 // Open/close state lives in RemoteStore.selectorStateById; the search text
 // and result list live in the store's shared tag search state (one tag
 // dropdown is open at a time).
@@ -25,12 +27,14 @@ export const RemoteTagSelect = observer(function RemoteTagSelect({
   store,
   selectorId,
   tagIdsSelected,
+  isCreateAllowed,
   isDisabled,
   onEvent
 }: {
   store: RemoteStore
   selectorId: string
   tagIdsSelected: string[]
+  isCreateAllowed: boolean
   isDisabled?: boolean
   onEvent: (eventType: string, eventData: Record<string, unknown>) => void
 }) {
@@ -79,7 +83,7 @@ export const RemoteTagSelect = observer(function RemoteTagSelect({
   }
 
   const searchText = store.tagSearchText.trim()
-  const isCreateVisible = searchText !== '' &&
+  const isCreateVisible = isCreateAllowed && searchText !== '' &&
     !store.tagIdsVisible.some(
       (tagId) => store.tagById.get(tagId)?.name === searchText
     )
@@ -153,30 +157,48 @@ export const RemoteTagSelect = observer(function RemoteTagSelect({
                 {store.isTagCreating ? 'Creating...' : `Create tag "${searchText}"`}
               </div>
             ) : null}
-            {store.tagSearchAction !== null ? (
+            {store.tagSearchAction === 'search' ? (
+              // full-list spinner only for a fresh search; loading the next
+              // page keeps the loaded tags visible (its row shows below)
               <div className="remote-tag-select-loading">
                 <SpinningCircle width={13} height={13} color="#6b7280" />
                 <span>Searching tags...</span>
               </div>
             ) : store.tagIdsVisible.length === 0 && !isCreateVisible ? (
               <div className="remote-tag-select-loading">
-                {searchText ? 'No matching tag' : 'No tags yet. Type a name to create one'}
+                {searchText
+                  ? 'No matching tag'
+                  : isCreateAllowed ? 'No tags yet. Type a name to create one' : 'No tags yet'}
               </div>
-            ) : store.tagIdsVisible.map((tagId) => {
-              const tag = store.tagById.get(tagId)
-              if (!tag) return null
-              return (
-                <div
-                  className={`remote-tag-select-item ${tagIdsSelected.includes(tagId) ? 'remote-tag-select-item-selected' : ''}`}
-                  key={tagId}
-                  onClick={() => toggleTag(tagId)}
-                >
-                  <span className="remote-tag-select-item-title">
-                    <MatchHighlightText text={tag.name} matchText={searchText} />
-                  </span>
-                </div>
-              )
-            })}
+            ) : (
+              <>
+                {store.tagIdsVisible.map((tagId) => {
+                  const tag = store.tagById.get(tagId)
+                  if (!tag) return null
+                  return (
+                    <div
+                      className={`remote-tag-select-item ${tagIdsSelected.includes(tagId) ? 'remote-tag-select-item-selected' : ''}`}
+                      key={tagId}
+                      onClick={() => toggleTag(tagId)}
+                    >
+                      <span className="remote-tag-select-item-title">
+                        <MatchHighlightText text={tag.name} matchText={searchText} />
+                      </span>
+                    </div>
+                  )
+                })}
+                {store.isTagsMore ? (
+                  <div
+                    className="remote-tag-select-item remote-tag-select-item-more"
+                    onClick={() => {
+                      void store.tagSearchLoadMore()
+                    }}
+                  >
+                    {store.tagSearchAction === 'searchMore' ? 'Loading...' : 'Load more tags'}
+                  </div>
+                ) : null}
+              </>
+            )}
           </div>
         </div>
       ) : null}

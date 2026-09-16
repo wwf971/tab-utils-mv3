@@ -77,6 +77,7 @@ export const RemoteUploadPanel = observer(function RemoteUploadPanel({
             store={remote}
             selectorId="upload-tags"
             tagIdsSelected={panel.tagIdsSelected}
+            isCreateAllowed={true}
             isDisabled={isBusy}
             onEvent={(eventType, eventData) => {
               if (eventType === 'tagsChange') {

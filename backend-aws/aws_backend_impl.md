@@ -82,7 +82,7 @@ The `Tag` / `TabTag` tables of the removed built-in tag system are dropped by th
 
 ## Lambda
 
-One function serves every api; the zip is flat (import by module name): `lambda_function.py`, `tab_server_core.py`, `tab_server_check.py`, `tab_server_db.py`, `tab_server_index_sqs.py`, and `ensure_architect.py` (for the table specs behind the maintenance apis). boto3 comes with the runtime; nothing else is needed, which is why config reaches the lambda as env instead of yaml:
+One function serves every api; the zip is flat (import by module name): `lambda_function.py`, `tab_server_core.py`, `tab_server_check.py`, `tab_server_params.py`, `tab_server_db.py`, `tab_server_index_sqs.py`, and `ensure_architect.py` (for the table specs behind the maintenance apis). boto3 comes with the runtime; nothing else is needed, which is why config reaches the lambda as env instead of yaml:
 
 | env | value |
 |---|---|

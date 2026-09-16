@@ -14,6 +14,7 @@ import {
 } from '@wwf971/tab-manage-frontend-common'
 import { RemoteStore, type RemoteTabItem } from './RemoteStore'
 import { RemoteWindowSelect } from './RemoteWindowSelect'
+import { RemoteTagSelect } from './RemoteTagSelect'
 import { RemoteSettingsPanel } from './RemoteSettingsPanel'
 import {
   getSearchFieldText,
@@ -41,7 +42,9 @@ export const RemotePanel = observer(function RemotePanel({
   const [rowMenu, setRowMenu] = useState<RemoteRowMenuState | null>(null)
   const context = store.context
   const isContextMode = store.isContextMode
-  const isActionBusy = store.isBusy && store.searchAction !== 'search'
+  // running searches (including a next-page load) do not lock the result table
+  const isActionBusy = store.isBusy
+    && store.searchAction !== 'search' && store.searchAction !== 'searchMore'
   const selectedCount = store.visibleSelectedIds.length
   const isSelected = selectedCount > 0
 
@@ -276,6 +279,37 @@ export const RemotePanel = observer(function RemotePanel({
         }}
       />
 
+      {/* tag filter of the search: results must carry all picked tags. the
+          selector is the one of the upload panel, with in-place tag creation
+          disallowed (a filter only makes sense over existing tags). with at
+          least one picked tag the search launches manually with the Search
+          button; without tags it launches automatically while typing */}
+      <div className="remote-search-tags">
+        <span className="remote-search-tags-label">Tags</span>
+        <RemoteTagSelect
+          store={store}
+          selectorId="search-tags"
+          tagIdsSelected={store.searchTagIdsSelected}
+          isCreateAllowed={false}
+          isDisabled={isActionBusy}
+          onEvent={(eventType, eventData) => {
+            if (eventType === 'tagsChange') {
+              store.setSearchTagIds((eventData.tagIds as string[]) ?? [])
+            }
+          }}
+        />
+        {store.searchTagIdsSelected.length > 0 ? (
+          <button
+            type="button"
+            className="tab-search-control-button"
+            disabled={store.isBusy}
+            onClick={() => void store.search()}
+          >
+            {store.searchAction === 'search' ? 'Searching...' : 'Search'}
+          </button>
+        ) : null}
+      </div>
+
       <div className="tab-search-control-viewport">
         <div className="tab-search-control-track">
           {buttons.map((button) => (
@@ -295,7 +329,7 @@ export const RemotePanel = observer(function RemotePanel({
 
       <div className={`tab-search-message tab-search-message-${store.messageStatus}`}>
         {store.messageText || (store.isLoggedIn
-          ? 'Enter text to search remote tabs'
+          ? 'Enter text or pick tags to search remote tabs'
           : 'Not logged in. Open remote settings at top right')}
       </div>
 
@@ -416,6 +450,21 @@ export const RemotePanel = observer(function RemotePanel({
           }}
         />
       </div>
+
+      {store.isSearchMore && !isContextMode ? (
+        <div className="remote-search-more">
+          <button
+            type="button"
+            className="tab-search-control-button"
+            disabled={store.searchAction !== null}
+            onClick={() => void store.searchLoadMore()}
+          >
+            {store.searchAction === 'searchMore'
+              ? 'Loading...'
+              : `Load More (${store.items.length} loaded)`}
+          </button>
+        </div>
+      ) : null}
 
       {rowMenu ? (
         <MenuComp

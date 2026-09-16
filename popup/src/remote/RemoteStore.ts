@@ -2,6 +2,7 @@ import { makeAutoObservable, runInAction } from 'mobx'
 import { remoteCall, remoteCodeAuth, remoteCodeNetwork, type RemoteResult } from './RemoteApi'
 import { cognitoLogin, cognitoRefresh } from './CognitoAuth'
 import { remoteAwsBuildDefaults } from './RemoteBuildConfig'
+import { REMOTE_SEARCH_PAGE_SIZE, REMOTE_TAG_PAGE_SIZE } from '../params'
 
 // MobX store of every remote (tab cloud) feature: endpoint/login settings,
 // cloud status, the remote window cache, remote search (live and trash scope),
@@ -185,13 +186,31 @@ export class RemoteStore {
   isTagCreating = false
   tagSearchToken = 0
   tagSearchTimeoutId: ReturnType<typeof setTimeout> | null = null
+  // dropdown list pagination: whether more tags exist past the loaded pages,
+  // and the offset the next page starts at
+  isTagsMore = false
+  tagOffsetNext = 0
 
   // remote search
   textInput = ''
   textCommitted = ''
+  // tag filter of the remote search: results must carry ALL these tags.
+  // empty = no tag filter (the search request then omits tagIdList).
+  // launch rule: with no picked tag the search launches automatically
+  // (typing is debounced); with at least one picked tag it is launched
+  // manually with the Search button — picking tags and typing then only
+  // compose the query, so composing a multi-tag query fires no requests.
+  searchTagIdsSelected: string[] = []
+  // the tag filter of the loaded results (set at launch), used by load more:
+  // the composed selection may have drifted since the last launch
+  searchTagIdsCommitted: string[] = []
   isTrashScope = false
   isSearchTitle = true
   isSearchUrl = true
+  // search result pagination: whether more results exist past the loaded
+  // pages, and the offset the next page starts at
+  isSearchMore = false
+  searchOffsetNext = 0
   items: RemoteTabItem[] = []
   selectedIds: string[] = []
   contentOffsetLeftById = new Map<string, number>()
@@ -419,6 +438,10 @@ export class RemoteStore {
     this.selectedIds = []
     this.context = null
     this.textCommitted = ''
+    // picked filter tags belong to the previous backend
+    this.searchTagIdsSelected = []
+    this.searchTagIdsCommitted = []
+    this.isSearchMore = false
     this.setMessage('idle', '')
     this.settingsUsername = this.loginDisplayName
     await chrome.storage.local.set({ remote_backend_use: this.backendUse })
@@ -927,8 +950,18 @@ export class RemoteStore {
     }, 180)
   }
 
-  // empty search text lists every tag of the user; otherwise the backend
-  // searches the tag names (any substring, case-insensitive)
+  // one page of tags for the dropdown: empty search text lists the user's
+  // tags (name order); otherwise the backend searches the tag names (any
+  // substring, case-insensitive)
+  async tagPageFetch(searchText: string, offset: number) {
+    const body: Record<string, unknown> = { limit: REMOTE_TAG_PAGE_SIZE, offset }
+    if (searchText) {
+      body.query = searchText
+      return this.call<{ tagList: RemoteTagItem[], isMore?: boolean }>('/api/tabTag/search', body)
+    }
+    return this.call<{ tagList: RemoteTagItem[], isMore?: boolean }>('/api/tabTag/list', body)
+  }
+
   async tagSearch() {
     if (!this.isLoggedIn) {
       this.tagSearchMessageText = 'Not logged in'
@@ -938,15 +971,13 @@ export class RemoteStore {
     this.tagSearchToken += 1
     const tagSearchToken = this.tagSearchToken
     this.tagSearchAction = 'search'
-    const result = searchText
-      ? await this.call<{ tagList: RemoteTagItem[] }>(
-        '/api/tabTag/search', { query: searchText, limit: 50 })
-      : await this.call<{ tagList: RemoteTagItem[] }>('/api/tabTag/list')
+    const result = await this.tagPageFetch(searchText, 0)
     return runInAction(() => {
       if (tagSearchToken !== this.tagSearchToken) return false
       this.tagSearchAction = null
       if (result.code !== 0 || !result.data) {
         this.tagIdsVisible = []
+        this.isTagsMore = false
         this.tagSearchMessageText = result.message ?? 'Tag search failed'
         return false
       }
@@ -954,6 +985,39 @@ export class RemoteStore {
         this.tagById.set(tag.id, tag)
       }
       this.tagIdsVisible = result.data.tagList.map((tag) => tag.id)
+      this.isTagsMore = result.data.isMore === true
+      this.tagOffsetNext = REMOTE_TAG_PAGE_SIZE
+      this.tagSearchMessageText = ''
+      return true
+    })
+  }
+
+  // next page of the dropdown (same search text), appended to the list
+  async tagSearchLoadMore() {
+    if (this.tagSearchAction !== null || !this.isTagsMore) return false
+    const searchText = this.tagSearchText.trim()
+    this.tagSearchToken += 1
+    const tagSearchToken = this.tagSearchToken
+    this.tagSearchAction = 'searchMore'
+    const result = await this.tagPageFetch(searchText, this.tagOffsetNext)
+    return runInAction(() => {
+      if (tagSearchToken !== this.tagSearchToken) return false
+      this.tagSearchAction = null
+      if (result.code !== 0 || !result.data) {
+        this.tagSearchMessageText = result.message ?? 'Tag loading failed'
+        return false
+      }
+      for (const tag of result.data.tagList) {
+        this.tagById.set(tag.id, tag)
+      }
+      // pages can overlap when tags changed meanwhile; drop duplicates
+      const idSet = new Set(this.tagIdsVisible)
+      this.tagIdsVisible = [
+        ...this.tagIdsVisible,
+        ...result.data.tagList.map((tag) => tag.id).filter((tagId) => !idSet.has(tagId))
+      ]
+      this.isTagsMore = result.data.isMore === true
+      this.tagOffsetNext += REMOTE_TAG_PAGE_SIZE
       this.tagSearchMessageText = ''
       return true
     })
@@ -992,7 +1056,19 @@ export class RemoteStore {
   setTextInput(text: string) {
     this.textInput = text
     if (this.context) this.exitContext()
-    this.queueCommit()
+    // with picked tags, typing only composes the query (manual launch)
+    if (this.searchTagIdsSelected.length === 0) this.queueCommit()
+  }
+
+  setSearchTagIds(tagIds: string[]) {
+    this.searchTagIdsSelected = tagIds
+    if (this.context) this.exitContext()
+    if (tagIds.length === 0) {
+      // the last tag was removed: the automatic mode resumes right away
+      void this.search()
+      return
+    }
+    this.setMessage('idle', 'Click Search to run the query')
   }
 
   setContentOffsetLeft(tabId: string, offsetLeft: number) {
@@ -1017,10 +1093,17 @@ export class RemoteStore {
     if (this.context) this.exitContext()
     this.items = []
     this.selectedIds = []
+    if (this.searchTagIdsSelected.length > 0) {
+      // manual mode: the user launches the query in the new scope
+      this.isSearchMore = false
+      this.setMessage('idle', 'Click Search to run the query in this scope')
+      return
+    }
     if (this.textInput.trim()) {
       void this.search()
     } else {
-      // an empty search text in trash scope lists the newest trashed tabs
+      // an empty search (no text, no tags) in trash scope lists the newest
+      // trashed tabs
       if (isTrashScope) void this.trashListLoad()
     }
   }
@@ -1033,7 +1116,8 @@ export class RemoteStore {
       if (fieldName === 'title') this.isSearchUrl = true
       else this.isSearchTitle = true
     }
-    if (this.textInput.trim()) void this.search()
+    // manual mode (tags picked): the toggle only composes the query
+    if (this.searchTagIdsSelected.length === 0 && this.textInput.trim()) void this.search()
   }
 
   setSelectedIds(ids: string[]) {
@@ -1041,16 +1125,36 @@ export class RemoteStore {
     else this.selectedIds = ids
   }
 
+  // one page request of the remote search. without picked tags the request
+  // stays the original one (no tagIdList); with tags the backend answers
+  // only tabs carrying all of them, and an empty search text is allowed
+  // (tags-only listing)
+  searchBodyMake(searchText: string, tagIds: string[], offset: number) {
+    const body: Record<string, unknown> = {
+      isSearchTitle: this.isSearchTitle,
+      isSearchUrl: this.isSearchUrl,
+      isTrashed: this.isTrashScope,
+      limit: REMOTE_SEARCH_PAGE_SIZE,
+      offset
+    }
+    if (searchText) body.query = searchText
+    if (tagIds.length > 0) body.tagIdList = [...tagIds]
+    return body
+  }
+
   async search() {
     const searchText = this.textInput.trim()
+    const tagIds = [...this.searchTagIdsSelected]
     this.searchToken += 1
     const searchToken = this.searchToken
-    if (!searchText) {
+    if (!searchText && tagIds.length === 0) {
       this.textCommitted = ''
+      this.searchTagIdsCommitted = []
+      this.isSearchMore = false
       if (this.isTrashScope) return this.trashListLoad()
       this.items = []
       this.selectedIds = []
-      this.setMessage('idle', 'Enter text to search remote tabs')
+      this.setMessage('idle', 'Enter text or pick tags to search remote tabs')
       return false
     }
     if (!this.isLoggedIn) {
@@ -1059,29 +1163,65 @@ export class RemoteStore {
     }
     this.searchAction = 'search'
     this.setMessage('loading', 'Searching remote tabs...')
-    const result = await this.call<{ tabList: RemoteTabItem[] }>('/api/search', {
-      query: searchText,
-      isSearchTitle: this.isSearchTitle,
-      isSearchUrl: this.isSearchUrl,
-      isTrashed: this.isTrashScope,
-      limit: 200
-    })
+    const result = await this.call<{ tabList: RemoteTabItem[], isMore?: boolean }>(
+      '/api/search', this.searchBodyMake(searchText, tagIds, 0))
     return runInAction(() => {
       if (searchToken !== this.searchToken) return false
       this.searchAction = null
       if (result.code !== 0 || !result.data) {
         this.items = []
         this.selectedIds = []
+        this.isSearchMore = false
         this.setMessage('error', result.message ?? 'Remote search failed')
         return false
       }
       this.textCommitted = searchText
+      this.searchTagIdsCommitted = tagIds
       this.items = result.data.tabList
+      this.isSearchMore = result.data.isMore === true
+      this.searchOffsetNext = REMOTE_SEARCH_PAGE_SIZE
       const idSet = new Set(this.items.map((item) => item.id))
       this.selectedIds = this.selectedIds.filter((id) => idSet.has(id))
       this.setMessage(
         'success',
-        this.items.length === 1 ? '1 remote tab found' : `${this.items.length} remote tabs found`
+        (this.items.length === 1 ? '1 remote tab found' : `${this.items.length} remote tabs found`)
+        + (this.isSearchMore ? ', more available' : '')
+      )
+      return true
+    })
+  }
+
+  // next page of the current search, appended to the loaded results. the
+  // query is the committed one (text and tags of the last launch) — the one
+  // the loaded results reflect, not the possibly re-composed selection
+  async searchLoadMore() {
+    if (this.searchAction || this.context || !this.isSearchMore) return false
+    if (!this.isLoggedIn) return false
+    this.searchToken += 1
+    const searchToken = this.searchToken
+    this.searchAction = 'searchMore'
+    this.setMessage('loading', 'Loading more results...')
+    const result = await this.call<{ tabList: RemoteTabItem[], isMore?: boolean }>(
+      '/api/search',
+      this.searchBodyMake(this.textCommitted, this.searchTagIdsCommitted, this.searchOffsetNext))
+    return runInAction(() => {
+      if (searchToken !== this.searchToken) return false
+      this.searchAction = null
+      if (result.code !== 0 || !result.data) {
+        this.setMessage('error', result.message ?? 'Loading more results failed')
+        return false
+      }
+      // pages can overlap when tabs changed meanwhile; drop duplicates
+      const idSet = new Set(this.items.map((item) => item.id))
+      this.items = [
+        ...this.items,
+        ...result.data.tabList.filter((item) => !idSet.has(item.id))
+      ]
+      this.isSearchMore = result.data.isMore === true
+      this.searchOffsetNext += REMOTE_SEARCH_PAGE_SIZE
+      this.setMessage(
+        'success',
+        `${this.items.length} remote tabs loaded` + (this.isSearchMore ? ', more available' : '')
       )
       return true
     })
@@ -1096,6 +1236,7 @@ export class RemoteStore {
     this.searchToken += 1
     const searchToken = this.searchToken
     this.searchAction = 'search'
+    this.isSearchMore = false // this listing is not the paged search
     this.setMessage('loading', 'Loading trash...')
     const result = await this.call<{ tabList: RemoteTabItem[] }>('/api/trash/list', { limit: 200 })
     return runInAction(() => {
@@ -1120,7 +1261,7 @@ export class RemoteStore {
 
   async refreshVisible() {
     if (this.context) return this.refreshContext()
-    if (this.textInput.trim()) return this.search()
+    if (this.textInput.trim() || this.searchTagIdsSelected.length > 0) return this.search()
     if (this.isTrashScope) return this.trashListLoad()
     return false
   }

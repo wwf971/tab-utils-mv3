@@ -59,6 +59,22 @@
   height: 16px;
 }
 
+.remote-search-tags {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.remote-search-tags-label {
+  font-size: 12px;
+  color: #374151;
+  flex: none;
+}
+
+.remote-search-more {
+  display: flex;
+}
+
 .remote-restore-pick {
   display: flex;
   align-items: center;

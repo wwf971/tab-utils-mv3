@@ -25,6 +25,7 @@
 
 import tab_server_check as config_check
 import tab_server_db as db
+import tab_server_params as params
 
 
 TRANSACT_ITEM_MAX = 100  # one dynamodb transaction holds at most 100 items
@@ -58,6 +59,15 @@ def ok(data=None, message=None):
 	if message:
 		response["message"] = message
 	return response
+
+
+def read_page_range(body, limit_default, limit_max):
+	# offset/limit pagination of the search-like apis (the list apis page
+	# with a cursor instead). the isMore response field tells whether more
+	# results exist past offset + limit.
+	offset = max(0, int(body.get("offset") or 0))
+	limit = min(limit_max, int(body.get("limit") or limit_default))
+	return offset, limit
 
 
 def read_id_list(body, name, is_required=True):
@@ -643,8 +653,9 @@ def append_tag_attach_changes(user_id, tab, tag_id, lexorank, changes):
 
 
 def api_tab_tag_list(user_id, body):
-	# without tabId: every tag of the user, in name order.
-	# with tabId: the tags of that tab, in attach-entry lexorank order.
+	# without tabId: the user's tags in name order, paged with offset/limit.
+	# with tabId: the tags of that tab, in attach-entry lexorank order; one
+	# tab carries few tags, so this mode is not paged.
 	if body.get("tabId"):
 		tab = db.tab_get_by_id(user_id, str(body["tabId"]))
 		if not tab:
@@ -654,24 +665,33 @@ def api_tab_tag_list(user_id, body):
 			tag = db.tag_get(user_id, entry["tag_id"])
 			if tag:
 				tag_list.append(tag_response(tag))
-		return ok({"tagList": tag_list})
+		return ok({"tagList": tag_list, "isMore": False})
+	offset, limit = read_page_range(
+		body, params.TAG_LIMIT_DEFAULT, params.TAG_LIMIT_MAX)
 	tags = sorted(db.tag_list_of_user(user_id), key=lambda tag: tag["name"])
-	return ok({"tagList": [tag_response(tag) for tag in tags]})
+	is_more = len(tags) > offset + limit
+	tags = tags[offset:offset + limit]
+	return ok({"tagList": [tag_response(tag) for tag in tags], "isMore": is_more})
 
 
 def api_tab_tag_search(user_id, body):
 	query_text = str(body.get("query") or "").strip()
 	if not query_text:
 		raise ApiError(CODE_INVALID, "query is required")
-	limit = min(200, int(body.get("limit") or 50))
-	hits = index.tag_name_search(user_id, query_text, limit)
+	offset, limit = read_page_range(
+		body, params.TAG_LIMIT_DEFAULT, params.TAG_LIMIT_MAX)
+	# one extra hit answers isMore without a second request
+	limit_index = min(offset + limit + 1, params.TAG_INDEX_FETCH_MAX)
+	hits = index.tag_name_search(user_id, query_text, limit_index)
+	is_more = len(hits) > offset + limit
+	hits = hits[offset:offset + limit]
 	# join with the tag entities; a doc whose entity is gone is dropped
 	tag_list = []
 	for hit in hits:
 		tag = db.tag_get(user_id, hit["tagId"])
 		if tag:
 			tag_list.append(tag_response(tag, hit["matchList"]))
-	return ok({"tagList": tag_list})
+	return ok({"tagList": tag_list, "isMore": is_more})
 
 
 def api_tab_tag_create(user_id, body):
@@ -832,8 +852,13 @@ def api_search(user_id, body):
 	query_tree = body.get("query")
 	if isinstance(query_tree, str):
 		query_tree = query_tree.strip()
-	if not query_tree:
-		raise ApiError(CODE_INVALID, "query is required")
+	# optional tag filter: only tabs carrying ALL the given tags are answered.
+	# with a tag filter the query text may be empty (tags-only listing).
+	tag_id_list = read_id_list(body, "tagIdList", is_required=False)
+	for tag_id in tag_id_list:
+		get_tag(user_id, tag_id)  # raises when the tag does not exist
+	if not query_tree and not tag_id_list:
+		raise ApiError(CODE_INVALID, "query or tagIdList is required")
 	field_list = []
 	if body.get("isSearchTitle", True):
 		field_list.append("title")
@@ -842,9 +867,29 @@ def api_search(user_id, body):
 	if not field_list:
 		raise ApiError(CODE_INVALID, "at least one of isSearchTitle/isSearchUrl must be true")
 	is_trashed = bool(body.get("isTrashed", False))
-	limit = min(500, int(body.get("limit") or 100))
+	offset, limit = read_page_range(
+		body, params.SEARCH_LIMIT_DEFAULT, params.SEARCH_LIMIT_MAX)
 
-	hits = index.search(user_id, query_tree, field_list, is_trashed, limit)
+	tab_id_tagged_set = None
+	if tag_id_list:
+		tab_id_tagged_set = search_tag_tab_id_set(user_id, tag_id_list)
+
+	if not query_tree:
+		return search_tags_only(user_id, tab_id_tagged_set, is_trashed, offset, limit)
+
+	if tab_id_tagged_set is not None:
+		# with a tag filter the whole considered index window is fetched:
+		# hits outside the tagged set are dropped below, so a small index
+		# limit could hide tagged tabs ranked after untagged ones
+		limit_index = params.SEARCH_INDEX_FETCH_MAX
+	else:
+		# one extra hit answers isMore without a second request
+		limit_index = min(offset + limit + 1, params.SEARCH_INDEX_FETCH_MAX)
+	hits = index.search(user_id, query_tree, field_list, is_trashed, limit_index)
+	if tab_id_tagged_set is not None:
+		hits = [hit for hit in hits if hit["tabId"] in tab_id_tagged_set]
+	is_more = len(hits) > offset + limit
+	hits = hits[offset:offset + limit]
 	# join with fresh dynamodb items; drop hits whose item is gone or whose
 	# trash state changed meanwhile
 	tab_by_id = {tab["id"]: tab
@@ -857,7 +902,37 @@ def api_search(user_id, body):
 		if (tab.get("trashAt") is not None) != is_trashed:
 			continue
 		tab_list.append({**tab_response(tab), "matchList": hit["matchList"]})
-	return ok({"tabList": tab_list})
+	return ok({"tabList": tab_list, "isMore": is_more})
+
+
+def search_tag_tab_id_set(user_id, tag_id_list):
+	# ids of the tabs carrying ALL the given tags: intersect the attach
+	# entries of each tag (gsi_tag_id of the obj-tag table, the membership
+	# truth; refer to tab_cloud.md#tags). entries of other users are dropped.
+	tab_id_set = None
+	for tag_id in tag_id_list:
+		entries = db.tab_tag_entry_list_of_tag(tag_id)
+		tab_id_set_of_tag = {
+			entry["obj_id"] for entry in entries
+			if entry.get("user_id") == user_id}
+		if tab_id_set is None:
+			tab_id_set = tab_id_set_of_tag
+		else:
+			tab_id_set = tab_id_set & tab_id_set_of_tag
+	return tab_id_set
+
+
+def search_tags_only(user_id, tab_id_tagged_set, is_trashed, offset, limit):
+	# empty query text with a tag filter: list the tabs carrying all the
+	# tags straight from dynamodb, no text matching and no index involved
+	tabs = db.tab_get_by_ids(user_id, sorted(tab_id_tagged_set))
+	tabs = [tab for tab in tabs if (tab.get("trashAt") is not None) == is_trashed]
+	# live scope: window order. trash scope: newest trashed first (a trash
+	# tabPath starts with the zero-padded trashAt)
+	tabs.sort(key=lambda tab: tab["tabPath"], reverse=is_trashed)
+	is_more = len(tabs) > offset + limit
+	tabs = tabs[offset:offset + limit]
+	return ok({"tabList": [tab_response(tab) for tab in tabs], "isMore": is_more})
 
 
 # ---------------------------------------------------------------------------

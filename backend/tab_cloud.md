@@ -120,6 +120,8 @@ Both query directions are efficient:
 - tags of a tab: the tab item's `tagIdList` is the denormalized display copy; the obj-tag partition of the tab id is the truth, in lexorank order.
 - tabs of a tag: one query on `gsi_tag_id` with the tag id, then join the tab items by id (dropping trashed tabs and other users' entries).
 
+The tabs-of-a-tag direction also powers the tag filter of the search api: one `gsi_tag_id` query per given tag, intersected into "tabs carrying all the tags" (refer to [Search with a tag filter](#search-with-a-tag-filter)).
+
 The attach entries live in DynamoDB next to this project's tables, so every tag change joins the tab cloud transaction: assigning/removing a tag writes the attach entry, one history record, and the tab item's `tagIdList` in one `TransactWriteItems`; uploading a tab with tags writes the tab item and its attach entries together. Attach entries are keyed by the tab id (not tabPath), so moving/trashing/restoring a tab does not touch them. Permanently deleting a tab deletes its attach entries in the same transaction; the history records (unbounded count) are wiped after the transaction, orphans are harmless because nothing reads history by a deleted tab id.
 
 Tag names are searched through the tag service's own char-level index (`3_tag`, document `{name, user_id}`, document id = tag id) living on the same local es service as the tab index. Creating a tag follows the tag service's rule: the name is indexed first and the worker's confirmation is awaited, only then the entity is written to DynamoDB, so a tag can never exist without being char-searchable.
@@ -399,15 +401,37 @@ tabMove(tabIdList, targetTabId, placement)
      delete groups left empty
 ```
 
-Searching:
+Searching (paged with `offset` + `limit`; the response's `isMore` tells whether more results exist past the page):
 
 ```text
-search(query, isSearchTitle, isSearchUrl, isTrashed, limit)
-  -> index search -> tabIds + match positions
-  -> batch-get tab items from dynamodb by id (gsiTabId)
+search(query, isSearchTitle, isSearchUrl, isTrashed, offset, limit)
+  -> index search, size offset + limit + 1   # the extra hit answers isMore
+  -> cut the [offset, offset + limit) page
+  -> batch-get the page's tab items from dynamodb by id (gsiTabId)
   -> drop hits whose item is gone or whose trash state changed meanwhile
-  -> respond items joined with match positions
+  -> respond items joined with match positions, + isMore
 ```
+
+Paging works over the stable index ranking, and never considers more than the top `SEARCH_INDEX_FETCH_MAX` (500) index hits: past that window `isMore` answers false and paging stops. Page sizes and this cap live in `tab_server_params.py`.
+
+### Search with a tag filter
+
+The search api takes an optional `tagIdList`; results must carry ALL the given tags. The tag filter is answered from the obj-tag table (the membership truth), not from the search index — tag membership is not indexed, and the intersection query is cheap:
+
+```text
+search(query?, ..., tagIdList, offset, limit)
+  -> one gsi_tag_id query per tag -> intersect into the tagged tab id set
+  -> query text empty:
+       -> batch-get the tagged tab items, filter to the live/trash scope,
+          sort in window order (trash: newest first)
+     query text given:
+       -> index search at the full considered window (a small size could
+          hide tagged tabs ranked after untagged ones), keep hits inside
+          the tagged set
+  -> cut the [offset, offset + limit) page, respond + isMore
+```
+
+Without `tagIdList` the search flow above is unchanged.
 
 Trash, restore, and permanent delete follow the journal workflow above; refer to [Trash](#trash).
 
@@ -460,6 +484,7 @@ extension keeps its local features usable.
 
 ```text
 backend/tab_server_core.py       # core logic of each api, transport-independent
+backend/tab_server_params.py     # centralized tunable parameters (pagination sizes etc.)
 backend/tab_server.py            # local transport: flask http entry, local auth, routing
 backend/tab_server_index.py      # general index api + elasticsearch implementation
 backend/config.yaml              # example config (auth, elasticsearch, server), tracked
@@ -487,6 +512,7 @@ Basic layout actually should be similar to 'Search', containing a search area th
 
 ```text
 search bar (+ title/url scope toggles, live/trash scope toggle)
+tag filter row (remote tag selector; results must carry all picked tags)
 control button group
 search result table
 ```
@@ -496,6 +522,9 @@ Everything is driven by the remote MobX store: server data (windows, tabs, tags)
 - Live scope: search results support Open (open in browser), Open + Trash (trash on the backend after the browser confirms the tabs opened), Context (remote context slices, same interaction as local context mode), Move before/after (right-click), and Trash.
 - Trash scope: the same search bar searches trashed tabs; results support Restore (to the original window, or to a window picked with the remote window selector) and Delete Permanently.
 - Match positions returned by the search api are highlighted with a yellow background.
+- The tag filter row narrows both scopes to tabs carrying all the picked tags; with tags picked, an empty search text lists those tabs without text matching (refer to [Search with a tag filter](#search-with-a-tag-filter)). Without picked tags the search request stays the original one.
+- Launch rule: with no picked tag the search launches automatically (typing is debounced, scope and title/url toggles re-search). With at least one picked tag the search is launched manually with the Search button of the tag filter row — picking tags, typing, and the toggles then only compose the query, so composing a multi-tag query fires no request per click. Removing the last picked tag resumes the automatic mode right away. Refresh and the after-operation reload always re-run the current query in both modes.
+- Results load one page at a time: when the response says more results exist, a Load More button below the result table appends the next page (duplicates from shifted pages are dropped). A new search, a scope switch, or a refresh restarts at the first page. Page sizes live in the popup's `params.ts`, the backend counterparts in `tab_server_params.py`.
 
 ### Upload from the Search tab
 
@@ -539,7 +568,7 @@ A reusable selector component (conforming to `selector.md`): a search-bar-like a
 
 ### Remote tag selector
 
-The tag counterpart (multi selection): picked tags show as chips with a cross icon, the dropdown search field queries `/api/tabTag/search` (the backend char index) instead of filtering a local cache — an empty search text lists every tag via `/api/tabTag/list`. When no listed tag matches the entered text exactly, the first row offers creating that tag in place (`/api/tabTag/create`); the created tag is not selected automatically — it shows at the top of the list (it matches the entered text) and the user clicks it to add it to the selection. Fetched tags are cached in the store keyed by id for chip display. It is used by the upload panel's tags row.
+The tag counterpart (multi selection): picked tags show as chips with a cross icon, the dropdown search field queries `/api/tabTag/search` (the backend char index) instead of filtering a local cache — an empty search text lists the user's tags via `/api/tabTag/list`. Both are paged: the dropdown shows one page and ends with a "Load more tags" row while the backend says more exist; loading a next page keeps the loaded tags visible (the full-list spinner only shows for a fresh search). When no listed tag matches the entered text exactly, the first row offers creating that tag in place (`/api/tabTag/create`); the created tag is not selected automatically — it shows at the top of the list (it matches the entered text) and the user clicks it to add it to the selection. Fetched tags are cached in the store keyed by id for chip display. It is used by the upload panel's tags row, and by the Remote tab's tag filter row — there in-place creation is disallowed (a filter only makes sense over existing tags), which callers choose with the `isCreateAllowed` prop.
 
 Both selector dropdowns open immediately on click and show a spinning circle while their server request (window fetch, tag list/search) is running, so a slow backend never blocks opening the dropdown.
 
